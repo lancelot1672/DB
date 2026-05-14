@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python create_template.py)",
+      "Bash(where python:*)",
+      "Bash(python3 -m pip install openpyxl --quiet)",
+      "Bash(python3 create_template.py)",
+      "Bash(/c/Users/admin/AppData/Local/Programs/Python/Python*/python.exe)",
+      "Bash(--version)",
+      "Read(//c/Users/admin/AppData/Local/Programs/**)",
+      "Bash(cmd.exe /c \"python --version\" 2>&1)",
+      "Bash(find C:/Users/admin/Documents/00.Develop/Migration -type f \\\\\\(-name *.js -o -name *.ts -o -name *.json -o -name *.env* -o -name *.yaml -o -name *.yml -o -name *.py -o -name *.sql -o -name *.config* \\\\\\) ! -path */.git/* ! -path */node_modules/*)",
+      "Bash(find C:/Users/admin/Documents/00.Develop/Migration -type f \\\\\\(-name *.properties -o -name *.ini -o -name *.conf -o -name *.sh -o -name README* -o -name Makefile \\\\\\) ! -path */.git/* ! -path */node_modules/*)",
+      "Bash(find C:/Users/admin/Documents/00.Develop/Migration -type f ! -path */.git/* ! -path */node_modules/* ! -path */__pycache__/*)"
+    ]
+  }
+}
