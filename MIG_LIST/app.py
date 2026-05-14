@@ -106,10 +106,10 @@ st.subheader(f"Preview ({len(df)} rows)")
 
 # Build WHERE condition preview
 def build_where(row):
-    w1 = row["WHERE_COL1"]
-    p1 = row["PRE1"]
-    w2 = row["WHERE_COL2"]
-    p2 = row["PRE2"]
+    w1 = row["WHERE_COL1"] if pd.notna(row["WHERE_COL1"]) else None
+    p1 = row["PRE1"] if pd.notna(row["PRE1"]) else None
+    w2 = row["WHERE_COL2"] if pd.notna(row["WHERE_COL2"]) else None
+    p2 = row["PRE2"] if pd.notna(row["PRE2"]) else None
     if w1 and p1 and w2 and p2:
         return f"WHERE {w1} >= '{p1}' AND {w2} < '{p2}'"
     elif w1 and p1:
@@ -119,7 +119,14 @@ def build_where(row):
 
 preview_df = df.copy()
 preview_df["WHERE_CONDITION"] = preview_df.apply(build_where, axis=1)
-st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+def highlight_generated(row):
+    styles = [""] * (len(row) - 1)
+    styles.append("background-color: #d4edda; color: #155724; font-weight: bold")
+    return styles
+
+styled_df = preview_df.style.apply(highlight_generated, axis=1)
+st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 if errors:
     st.error("Please fix errors before generating SQL.")
