@@ -47,7 +47,8 @@ for col in ALL_COLS:
         df[col] = None
 
 df = df[ALL_COLS]
-df = df.where(df.notna() & (df.astype(str).str.strip() != ""), None)
+for col in ALL_COLS:
+    df[col] = df[col].apply(lambda x: x.strip() if isinstance(x, str) and x.strip() != "" else None)
 
 # ============================================================
 # 3. Data validation
