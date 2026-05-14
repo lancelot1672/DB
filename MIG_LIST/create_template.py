@@ -28,9 +28,9 @@ for col, header in enumerate(headers, 1):
 
 # --- Sample data ---
 samples = [
-    ("DBADM", "TEST_ORDER", "ORDER_DATE", "20250401", None, None),
+    ("DBADM", "TEST_ORDER", "ORDER_DATE", "20250401", "", ""),
     ("DBADM", "TEST_LOG", "LOG_DATE", "20250201", "LOG_DATE", "20250601"),
-    ("DBADM", "TEST_CODE", None, None, None, None),
+    ("DBADM", "TEST_CODE", "", "", "", ""),
 ]
 
 for row_idx, row_data in enumerate(samples, 2):
@@ -64,13 +64,13 @@ for col, header in enumerate(headers, 1):
 sample_data = [
     ("SALES",  "ORDER_HEADER",  "ORDER_DATE",  "20250101", "ORDER_DATE",  "20250701"),
     ("SALES",  "ORDER_DETAIL",  "ORDER_DATE",  "20250101", "ORDER_DATE",  "20250701"),
-    ("SALES",  "ORDER_STATUS",  None,           None,       None,          None),
-    ("HR",     "EMPLOYEE",      None,           None,       None,          None),
-    ("HR",     "SALARY_HIST",   "PAY_DATE",    "20250101", None,          None),
-    ("HR",     "DEPT_CODE",     None,           None,       None,          None),
-    ("INV",    "STOCK_MASTER",  None,           None,       None,          None),
+    ("SALES",  "ORDER_STATUS",  "",           "",       "",          ""),
+    ("HR",     "EMPLOYEE",      "",           "",       "",          ""),
+    ("HR",     "SALARY_HIST",   "PAY_DATE",    "20250101", "",          ""),
+    ("HR",     "DEPT_CODE",     "",           "",       "",          ""),
+    ("INV",    "STOCK_MASTER",  "",           "",       "",          ""),
     ("INV",    "STOCK_TRANS",   "TRANS_DATE",  "20250301", "TRANS_DATE",  "20250601"),
-    ("INV",    "WAREHOUSE",     None,           None,       None,          None),
+    ("INV",    "WAREHOUSE",     "",           "",       "",          ""),
     ("FIN",    "GL_JOURNAL",    "POST_DATE",   "20250101", "POST_DATE",   "20260101"),
 ]
 

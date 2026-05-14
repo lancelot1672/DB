@@ -141,7 +141,7 @@ st.subheader("Generate SQL")
 include_truncate = st.checkbox("Include TRUNCATE statement", value=True)
 
 def to_sql_value(val):
-    if val is None:
+    if val is None or pd.isna(val):
         return "NULL"
     return f"'{val}'"
 
