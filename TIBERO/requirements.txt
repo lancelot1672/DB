@@ -1,0 +1,8 @@
+# SQL Grid Web - PostgreSQL 9.6
+# PostgreSQL 9.6 호환 버전으로 고정
+streamlit>=1.28,<2
+pandas>=1.5,<3
+psycopg2-binary>=2.9,<3
+python-dotenv>=1.0,<2
+# 그리드(AG Grid) - 미설치 시 st.dataframe 로 자동 폴백
+streamlit-aggrid>=0.3.4

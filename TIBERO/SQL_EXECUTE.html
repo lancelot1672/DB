@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/veritas-infoscale-noc-design-system-74ebcc5e-cc7e-4515-acb4-236d19949787/colors_and_type.css">
+  <script src="_ds/veritas-infoscale-noc-design-system-74ebcc5e-cc7e-4515-acb4-236d19949787/_ds_bundle.js"></script>
+  <style>
+    html, body { background: #020617; }
+    @keyframes sg-spin { to { transform: rotate(360deg); } }
+    .sg-ta { resize: none; }
+    .sg-ta::placeholder { color: var(--fg-mute); }
+    .sg-runbtn:hover { filter: brightness(1.08); }
+    .sg-runbtn:active { transform: translateY(1px); }
+    .sg-ghost:hover { background: var(--bg-2); }
+    .sg-preset:hover { border-color: var(--border-strong); color: var(--fg-1); }
+    .sg-csv:hover { background: var(--bg-3); }
+    .sg-grid tbody tr:hover td { background: var(--bg-2); }
+    .sg-grid th:hover { color: var(--fg-1); }
+  </style>
+</helmet>
+<div class="scheme-c" style="height:100vh; display:flex; flex-direction:column; background:var(--bg-0); color:var(--fg-1); font-family:var(--font-ui); overflow:hidden;">
+
+  <!-- Header -->
+  <header style="height:64px; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--border-1); background:var(--bg-1);">
+    <div style="display:flex; align-items:center; gap:14px;">
+      <div style="width:32px; height:32px; border-radius:8px; background:var(--brand); display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 1px rgba(139,92,246,0.4), 0 4px 12px rgba(139,92,246,0.25);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"></path></svg>
+      </div>
+      <div style="display:flex; flex-direction:column; line-height:1.1;">
+        <span style="font-family:var(--font-display); font-weight:700; font-size:18px; letter-spacing:-0.01em;">SQL Grid</span>
+        <span class="mono" style="font-size:11px; color:var(--fg-3); letter-spacing:0.02em;">PostgreSQL 9.6</span>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <div style="display:flex; align-items:center; gap:8px; padding:5px 12px; border:1px solid var(--border-1); border-radius:8px; background:var(--bg-inset);">
+        <span class="dot online"></span>
+        <span class="mono" style="font-size:12px; color:var(--fg-2);">{{ connLabel }}</span>
+      </div>
+      <span class="pill pill-online" style="gap:0;">READ ONLY</span>
+    </div>
+  </header>
+
+  <!-- Body -->
+  <div style="flex:1; min-height:0; display:flex; flex-direction:column; gap:16px; padding:16px 24px 20px;">
+
+    <!-- Editor panel -->
+    <section class="panel" style="flex:none; display:flex; flex-direction:column;">
+      <div class="panel-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span class="label" style="color:var(--fg-2); white-space:nowrap;">쿼리 편집기</span>
+          <span class="mono" style="font-size:11px; color:var(--fg-mute);">Ctrl+Enter 로 실행</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span class="label" style="margin-right:2px;">샘플</span>
+          <sc-for list="{{ presets }}" as="p" hint-placeholder-count="4">
+            <button type="button" class="sg-preset" onClick="{{ p.onClick }}" style="font-family:var(--font-mono); font-size:12px; color:var(--fg-3); background:transparent; border:1px solid var(--border-1); border-radius:6px; padding:3px 9px; cursor:pointer; transition:all var(--dur) var(--ease);">{{ p.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+      <div style="display:flex; height:248px;">
+        <!-- line gutter -->
+        <sc-if value="{{ showLineNums }}" hint-placeholder-val="{{ true }}">
+          <div ref="{{ gutterRef }}" style="flex:none; width:52px; overflow:hidden; padding:14px 10px 14px 0; text-align:right; background:var(--bg-inset); border-right:1px solid var(--border-1); border-bottom-left-radius:var(--radius);">
+            <sc-for list="{{ lineNumbers }}" as="ln" hint-placeholder-count="12">
+              <div class="mono" style="font-size:13px; line-height:20px; color:var(--fg-mute); font-variant-numeric:tabular-nums;">{{ ln }}</div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <textarea class="sg-ta mono" ref="{{ taRef }}" value="{{ sql }}" onInput="{{ onSqlInput }}" onScroll="{{ onSqlScroll }}" onKeyDown="{{ onSqlKey }}" spellcheck="false" placeholder="SELECT ... FROM ... WHERE ..." style="flex:1; height:100%; padding:14px 16px; font-family:var(--font-mono); font-size:13px; line-height:20px; color:var(--fg-1); background:transparent; border:0; outline:none; tab-size:2; white-space:pre; overflow:auto; caret-color:var(--brand);"></textarea>
+      </div>
+      <!-- toolbar -->
+      <div style="flex:none; display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-top:1px solid var(--border-1); background:var(--bg-inset); border-bottom-left-radius:var(--radius); border-bottom-right-radius:var(--radius);">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="tag">SELECT 전용</span>
+          <span class="tag">다중문 차단</span>
+          <span class="tag">읽기 전용 계정</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--fg-3); white-space:nowrap;">
+            행 제한
+            <select value="{{ limit }}" onChange="{{ onLimitChange }}" class="mono" style="font-size:12px; color:var(--fg-1); background:var(--bg-2); border:1px solid var(--border-1); border-radius:6px; padding:5px 8px; cursor:pointer; outline:none; min-width:64px;">
+              <sc-for list="{{ limitOptions }}" as="o" hint-placeholder-count="4">
+                <option value="{{ o }}">{{ o }}</option>
+              </sc-for>
+            </select>
+          </label>
+          <button type="button" class="sg-ghost" onClick="{{ onClear }}" style="font-size:13px; color:var(--fg-2); background:transparent; border:1px solid var(--border-1); border-radius:8px; padding:7px 14px; cursor:pointer; transition:background var(--dur) var(--ease);">지우기</button>
+          <button type="button" class="sg-runbtn" onClick="{{ onRun }}" disabled="{{ running }}" style="{{ runBtnStyle }}">
+            <sc-if value="{{ running }}" hint-placeholder-val="{{ false }}">
+              <span style="display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,0.4); border-top-color:#fff; border-radius:50%; animation:sg-spin 0.7s linear infinite;"></span>
+            </sc-if>
+            <sc-if value="{{ notRunning }}" hint-placeholder-val="{{ true }}">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"></path></svg>
+            </sc-if>
+            <span>{{ runLabel }}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results panel -->
+    <section class="panel" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+      <!-- result bar -->
+      <div class="panel-header" style="min-height:52px;">
+        <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+          <sc-if value="{{ hasResult }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="label" style="white-space:nowrap;">조회 건수</span>
+              <span class="mono" style="font-size:16px; font-weight:600; color:var(--fg-1); font-variant-numeric:tabular-nums;">{{ countStr }}</span>
+            </div>
+            <div style="width:1px; height:22px; background:var(--border-1);"></div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="label" style="white-space:nowrap;">수행 시간</span>
+              <span class="mono" style="font-size:16px; font-weight:600; color:var(--st-online); font-variant-numeric:tabular-nums;">{{ msStr }}</span>
+            </div>
+            <span class="tag" style="color:var(--brand); border-color:var(--brand);">{{ shapeLabel }}</span>
+            <sc-if value="{{ limited }}" hint-placeholder-val="{{ false }}">
+              <span class="pill pill-partial">{{ limitNote }}</span>
+            </sc-if>
+          </sc-if>
+          <sc-if value="{{ idle }}" hint-placeholder-val="{{ false }}">
+            <span class="label">결과</span>
+          </sc-if>
+        </div>
+        <sc-if value="{{ hasResult }}" hint-placeholder-val="{{ true }}">
+          <button type="button" class="sg-csv" onClick="{{ onExport }}" style="display:flex; align-items:center; gap:7px; font-size:13px; font-weight:500; color:var(--fg-1); background:var(--bg-2); border:1px solid var(--border-1); border-radius:8px; padding:7px 14px; cursor:pointer; transition:background var(--dur) var(--ease);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            CSV 저장
+          </button>
+        </sc-if>
+      </div>
+
+      <!-- result body -->
+      <div style="flex:1; min-height:0; position:relative;">
+
+        <!-- error -->
+        <sc-if value="{{ hasError }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:20px 24px;">
+            <div style="border:1px solid var(--st-faulted); background:var(--st-faulted-bg); border-radius:var(--radius); padding:16px 18px; display:flex; gap:14px; align-items:flex-start;">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--st-faulted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none; margin-top:2px;"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+              <div style="min-width:0;">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                  <span style="font-weight:600; font-size:14px; color:var(--st-faulted);">쿼리 오류</span>
+                  <sc-if value="{{ errCode }}" hint-placeholder-val="{{ true }}">
+                    <span class="tag" style="color:var(--st-faulted); border-color:var(--st-faulted);">SQLSTATE {{ errCode }}</span>
+                  </sc-if>
+                </div>
+                <pre class="mono" style="margin:0; font-size:13px; line-height:1.5; color:var(--fg-1); white-space:pre-wrap; word-break:break-word;">{{ errMsg }}</pre>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- idle empty state -->
+        <sc-if value="{{ idle }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--fg-mute);">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path></svg>
+            <span style="font-size:14px;">쿼리를 실행하면 결과가 여기에 표시됩니다</span>
+          </div>
+        </sc-if>
+
+        <!-- running -->
+        <sc-if value="{{ running }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--fg-2);">
+            <span style="display:inline-block; width:28px; height:28px; border:3px solid var(--bg-3); border-top-color:var(--brand); border-radius:50%; animation:sg-spin 0.7s linear infinite;"></span>
+            <span class="mono" style="font-size:13px;">쿼리 실행 중…</span>
+          </div>
+        </sc-if>
+
+        <!-- grid -->
+        <sc-if value="{{ hasResult }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute; inset:0; overflow:auto;">
+            <table class="tbl sg-grid" style="min-width:100%;">
+              <thead>
+                <tr>
+                  <th style="width:48px; text-align:right; color:var(--fg-mute); position:sticky; top:0;">#</th>
+                  <sc-for list="{{ columns }}" as="col" hint-placeholder-count="6">
+                    <th onClick="{{ col.onSort }}" style="{{ col.thStyle }}">
+                      <span style="display:inline-flex; align-items:center; gap:4px;">{{ col.label }}<span style="color:var(--brand); font-size:10px;">{{ col.arrow }}</span></span>
+                    </th>
+                  </sc-for>
+                </tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{ rows }}" as="row" hint-placeholder-count="10">
+                  <tr>
+                    <td style="{{ rowNumStyle }}">{{ row.n }}</td>
+                    <sc-for list="{{ row.cells }}" as="cell" hint-placeholder-count="6">
+                      <td style="{{ cell.tdStyle }}">
+                        <sc-if value="{{ cell.isPill }}" hint-placeholder-val="{{ false }}">
+                          <span class="{{ cell.pillCls }}">{{ cell.v }}</span>
+                        </sc-if>
+                        <sc-if value="{{ cell.plain }}" hint-placeholder-val="{{ true }}">{{ cell.v }}</sc-if>
+                      </td>
+                    </sc-for>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </sc-if>
+
+      </div>
+    </section>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:820},&quot;errorRate&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:0.42,&quot;min&quot;:0,&quot;max&quot;:0.5,&quot;step&quot;:0.02,&quot;unit&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;lineNumbers&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Editor&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;comfortable&quot;,&quot;options&quot;:[&quot;comfortable&quot;,&quot;compact&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Grid&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.taRef = React.createRef();
+    this.gutterRef = React.createRef();
+    this.QUERIES = {
+      spend: "SELECT\n    c.customer_id,\n    c.name,\n    c.city,\n    c.country,\n    COUNT(o.order_id)  AS order_count,\n    SUM(o.amount)      AS total_spent,\n    MAX(o.order_date)  AS last_order\nFROM customers c\nJOIN orders o ON o.customer_id = c.customer_id\nWHERE c.status = 'active'\nGROUP BY c.customer_id, c.name, c.city, c.country\nORDER BY total_spent DESC;",
+      customers: "SELECT customer_id, name, email, city, country, signup_date, status\nFROM customers\nWHERE status = 'active'\nORDER BY signup_date DESC;",
+      orders: "SELECT order_id, customer_id, order_date, amount, status, channel\nFROM orders\nWHERE order_date >= '2026-01-01'\nORDER BY amount DESC;",
+      transactions: "SELECT txn_id, order_id, method, amount, currency, processed_at, state\nFROM transactions\nORDER BY processed_at DESC;"
+    };
+    this.COLS = {
+      customer_spend: [["customer_id","int"],["name","text"],["city","text"],["country","text"],["order_count","int"],["total_spent","money"],["last_order","date"]],
+      customers: [["customer_id","int"],["name","text"],["email","email"],["city","text"],["country","text"],["signup_date","date"],["status","status"]],
+      orders: [["order_id","int"],["customer_id","int"],["order_date","date"],["amount","money"],["status","status"],["channel","text"]],
+      transactions: [["txn_id","int"],["order_id","int"],["method","text"],["amount","money"],["currency","text"],["processed_at","datetime"],["state","status"]]
+    };
+    this.SHAPE_LABEL = { customer_spend: "customers ⋈ orders", customers: "customers", orders: "orders", transactions: "transactions" };
+    this.data = this.buildData();
+    this.state = {
+      sql: this.QUERIES.spend,
+      running: false,
+      result: null,   // { shape, records, ms }
+      error: null,    // { code, message }
+      sortCol: null,
+      sortDir: "asc",
+      limit: 1000
+    };
+    this._timer = null;
+  }
+
+  componentWillUnmount() { if (this._timer) clearTimeout(this._timer); }
+
+  // ---------- seeded mock data ----------
+  buildData() {
+    let seed = 20260702;
+    const rnd = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    const pick = a => a[Math.floor(rnd() * a.length)];
+    const first = ["Ava","Liam","Noah","Emma","Olivia","Sofia","Mateo","Yuna","Haruki","Wei","Aria","Ethan","Mia","Lucas","Chloe","Diego","Fatima","Omar","Nina","Ravi","Sana","Kenji","Lea","Marco","Ingrid","Pablo","Zara","Theo","Isla","Hugo"];
+    const last = ["Kim","Park","Lee","Chen","Wang","Sato","Garcia","Silva","Muller","Rossi","Novak","Haddad","Sharma","Okafor","Tanaka","Nguyen","Costa","Andersson","Dubois","Popov"];
+    const cities = [["Seoul","KR"],["Tokyo","JP"],["Singapore","SG"],["Berlin","DE"],["Paris","FR"],["London","GB"],["New York","US"],["Sao Paulo","BR"],["Mumbai","IN"],["Toronto","CA"],["Sydney","AU"],["Amsterdam","NL"]];
+    const custStatus = ["active","active","active","active","inactive","pending","closed"];
+    const chans = ["web","mobile","partner","pos","api"];
+    const orderStatus = ["completed","completed","completed","pending","processing","cancelled","refunded"];
+    const methods = ["card","bank_transfer","paypal","apple_pay","wallet"];
+    const currencies = ["USD","USD","EUR","KRW","JPY","GBP"];
+    const txnState = ["settled","settled","paid","pending","failed","declined","refunded"];
+    const y2023 = new Date("2023-01-01").getTime();
+    const now = new Date("2026-06-28").getTime();
+    const between = (a, b) => new Date(a + rnd() * (b - a));
+    const domains = ["example.com","mail.io","corp.net","acme.co"];
+
+    const customers = [];
+    for (let i = 0; i < 60; i++) {
+      const c = pick(cities), fn = pick(first), ln = pick(last);
+      customers.push({
+        customer_id: 1000 + i,
+        name: fn + " " + ln,
+        email: (fn + "." + ln + i).toLowerCase() + "@" + pick(domains),
+        city: c[0], country: c[1],
+        signup_date: between(y2023, now),
+        status: pick(custStatus)
+      });
+    }
+    const orders = []; let oid = 50000;
+    customers.forEach(cu => {
+      const n = Math.floor(rnd() * 6);
+      for (let j = 0; j < n; j++) {
+        const od = between(Math.max(y2023, cu.signup_date.getTime()), now);
+        orders.push({ order_id: oid++, customer_id: cu.customer_id, order_date: od, amount: Math.round((rnd() * 1800 + 20) * 100) / 100, status: pick(orderStatus), channel: pick(chans) });
+      }
+    });
+    const transactions = []; let tid = 900000;
+    orders.forEach(o => {
+      if (rnd() < 0.85) transactions.push({ txn_id: tid++, order_id: o.order_id, method: pick(methods), amount: o.amount, currency: pick(currencies), processed_at: new Date(o.order_date.getTime() + Math.floor(rnd() * 72) * 3600000), state: pick(txnState) });
+    });
+    const byCust = {};
+    orders.forEach(o => { (byCust[o.customer_id] = byCust[o.customer_id] || []).push(o); });
+    const customer_spend = [];
+    customers.forEach(cu => {
+      if (cu.status !== "active") return;
+      const os = byCust[cu.customer_id];
+      if (!os || !os.length) return;
+      customer_spend.push({ customer_id: cu.customer_id, name: cu.name, city: cu.city, country: cu.country, order_count: os.length, total_spent: Math.round(os.reduce((s, x) => s + x.amount, 0) * 100) / 100, last_order: new Date(Math.max.apply(null, os.map(x => x.order_date.getTime()))) });
+    });
+    return { customers, orders, transactions, customer_spend };
+  }
+
+  // ---------- formatting ----------
+  pad(n) { return String(n).padStart(2, "0"); }
+  fmtDate(d) { if (!(d instanceof Date)) return ""; return d.getFullYear() + "-" + this.pad(d.getMonth() + 1) + "-" + this.pad(d.getDate()); }
+  fmtDateTime(d) { if (!(d instanceof Date)) return ""; return this.fmtDate(d) + " " + this.pad(d.getHours()) + ":" + this.pad(d.getMinutes()) + ":" + this.pad(d.getSeconds()); }
+  statusPill(v) {
+    const s = String(v || "").toLowerCase();
+    if (["active","completed","paid","settled"].includes(s)) return "pill pill-online";
+    if (["pending","processing"].includes(s)) return "pill pill-transit";
+    if (["cancelled","failed","declined"].includes(s)) return "pill pill-faulted";
+    if (["refunded","hold"].includes(s)) return "pill pill-partial";
+    return "pill pill-offline";
+  }
+
+  // ---------- run / guard / execute ----------
+  onRun = () => {
+    if (this.state.running) return;
+    const raw = this.state.sql || "";
+    const trimmed = raw.trim();
+    if (!trimmed) { this.setState({ error: { code: "", message: "SQL을 입력하세요." }, result: null }); return; }
+    const stmts = trimmed.replace(/;\s*$/, "").split(";").map(s => s.trim()).filter(Boolean);
+    if (stmts.length > 1) { this.setState({ error: { code: "", message: "여러 문장은 실행할 수 없습니다. 단일 SELECT 문만 입력하세요." }, result: null }); return; }
+    const q = stmts[0] || trimmed;
+    const low = q.toLowerCase();
+    if (!/^\s*(select|with)\b/.test(low)) { this.setState({ error: { code: "", message: "조회(SELECT) 쿼리만 허용됩니다." }, result: null }); return; }
+    if (/\b(insert|update|delete|drop|truncate|alter|create|grant|revoke|merge|call|copy|vacuum)\b/.test(low)) {
+      this.setState({ error: { code: "", message: "조회(SELECT) 쿼리만 허용됩니다.  (DML/DDL 구문이 차단되었습니다)" }, result: null }); return;
+    }
+    this.setState({ running: true, error: null, result: null });
+    const delay = 340 + Math.random() * 520;
+    this._timer = setTimeout(() => this.execute(low, delay), delay);
+  };
+
+  execute(low, delay) {
+    const rate = this.props.errorRate != null ? this.props.errorRate : 0.12;
+    if (Math.random() < rate) {
+      const errs = [
+        { code: "42703", message: "ERROR: column \"totl_spent\" does not exist\nLINE 6:     SUM(o.amount) AS totl_spent\n                             ^\nHINT: Perhaps you meant to reference the column \"total_spent\"." },
+        { code: "42601", message: "ERROR: syntax error at or near \"FORM\"\nLINE 8: FORM customers c\n        ^" },
+        { code: "42P01", message: "ERROR: relation \"custmers\" does not exist\nLINE 8: FROM custmers c\n             ^" },
+        { code: "57014", message: "ERROR: canceling statement due to statement timeout\nCONTEXT: while executing query on prod_readonly@10.20.0.14" },
+        { code: "53300", message: "FATAL: too many connections for role \"prod_readonly\"" },
+        { code: "42803", message: "ERROR: column \"c.name\" must appear in the GROUP BY clause or be used in an aggregate function\nLINE 3:     c.name," }
+      ];
+      const e = errs[Math.floor(Math.random() * errs.length)];
+      this.setState({ running: false, error: e, result: null });
+      return;
+    }
+    const shape = this.pickShape(low);
+    const ms = 8 + Math.random() * 180 + (this.data[shape].length * 0.35);
+    this.setState({ running: false, error: null, result: { shape, records: this.data[shape], ms }, sortCol: null, sortDir: "asc" });
+  }
+
+  pickShape(low) {
+    const hasCust = /\bcustomers\b/.test(low);
+    const hasOrd = /\borders\b/.test(low);
+    const hasTxn = /\btransactions\b/.test(low);
+    const agg = /\bgroup\s+by\b/.test(low) || /\b(count|sum|avg|min|max)\s*\(/.test(low);
+    if (hasTxn) return "transactions";
+    if (hasCust && hasOrd && agg) return "customer_spend";
+    if (hasCust && hasOrd) return "orders";
+    if (hasOrd) return "orders";
+    if (hasCust) return "customers";
+    return "customers";
+  }
+
+  onClear = () => { this.setState({ sql: "", result: null, error: null }); if (this.taRef.current) this.taRef.current.focus(); };
+
+  loadPreset(key) { this.setState({ sql: this.QUERIES[key], result: null, error: null }); }
+
+  onSqlInput = (e) => { this.setState({ sql: e.target.value }); };
+  onSqlScroll = (e) => { if (this.gutterRef.current) this.gutterRef.current.scrollTop = e.target.scrollTop; };
+  onSqlKey = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); this.onRun(); } };
+  onLimitChange = (e) => { this.setState({ limit: parseInt(e.target.value, 10) }); };
+  sort(key) {
+    this.setState(s => {
+      if (s.sortCol === key) return { sortDir: s.sortDir === "asc" ? "desc" : "asc" };
+      return { sortCol: key, sortDir: "asc" };
+    });
+  }
+
+  // ---------- processing (sort + limit) ----------
+  processed() {
+    const r = this.state.result;
+    if (!r) return null;
+    const cols = this.COLS[r.shape];
+    let recs = r.records.slice();
+    const { sortCol, sortDir, limit } = this.state;
+    if (sortCol) {
+      const meta = cols.find(c => c[0] === sortCol);
+      const type = meta ? meta[1] : "text";
+      recs.sort((a, b) => {
+        let av = a[sortCol], bv = b[sortCol];
+        if (type === "date" || type === "datetime") { av = av ? av.getTime() : 0; bv = bv ? bv.getTime() : 0; }
+        else if (type === "int" || type === "money") { av = +av; bv = +bv; }
+        else { av = String(av).toLowerCase(); bv = String(bv).toLowerCase(); }
+        if (av < bv) return sortDir === "asc" ? -1 : 1;
+        if (av > bv) return sortDir === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
+    const limited = recs.length > limit;
+    return { cols, shown: recs.slice(0, limit), total: recs.length, limited };
+  }
+
+  makeCell(val, type) {
+    if (type === "status") return { isPill: true, plain: false, pillCls: this.statusPill(val), v: String(val || "").toUpperCase(), tdStyle: {} };
+    let v = "", style = {};
+    if (type === "money") { v = "$" + Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); style = { textAlign: "right", fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--fg-1)" }; }
+    else if (type === "int") { v = Number(val).toLocaleString("en-US"); style = { textAlign: "right", fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--fg-2)" }; }
+    else if (type === "date") { v = this.fmtDate(val); style = { fontFamily: "var(--font-mono)", color: "var(--fg-2)" }; }
+    else if (type === "datetime") { v = this.fmtDateTime(val); style = { fontFamily: "var(--font-mono)", color: "var(--fg-2)" }; }
+    else if (type === "email") { v = val; style = { fontFamily: "var(--font-mono)", color: "var(--fg-3)" }; }
+    else { v = val; style = {}; }
+    return { isPill: false, plain: true, pillCls: "", v, tdStyle: style };
+  }
+
+  csvVal(val, type) {
+    if (val == null) return "";
+    if (type === "money") return Number(val).toFixed(2);
+    if (type === "int") return String(val);
+    if (type === "date") return this.fmtDate(val);
+    if (type === "datetime") return this.fmtDateTime(val);
+    return String(val);
+  }
+
+  onExport = () => {
+    const p = this.processed();
+    if (!p) return;
+    const esc = s => { s = String(s); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const header = p.cols.map(c => esc(c[0])).join(",");
+    const lines = p.shown.map(rec => p.cols.map(c => esc(this.csvVal(rec[c[0]], c[1]))).join(","));
+    const csv = "\uFEFF" + [header, ...lines].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "query_result_" + this.state.result.shape + ".csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  renderVals() {
+    const s = this.state;
+    const density = this.props.density || "comfortable";
+    const rowH = density === "compact" ? "28px" : "36px";
+    const showLineNums = this.props.lineNumbers != null ? this.props.lineNumbers : true;
+
+    const lineCount = (s.sql.match(/\n/g) || []).length + 1;
+    const lineNumbers = Array.from({ length: Math.max(lineCount, 12) }, (_, i) => i + 1);
+
+    const p = s.result ? this.processed() : null;
+
+    let columns = [], rows = [], countStr = "0", msStr = "0.000s", limited = false, limitNote = "", shapeLabel = "";
+    if (p) {
+      columns = p.cols.map(c => ({
+        label: c[0],
+        arrow: s.sortCol === c[0] ? (s.sortDir === "asc" ? "▲" : "▼") : "",
+        onSort: () => this.sort(c[0]),
+        thStyle: {
+          cursor: "pointer",
+          userSelect: "none",
+          textAlign: (c[1] === "int" || c[1] === "money") ? "right" : "left",
+          whiteSpace: "nowrap",
+          color: s.sortCol === c[0] ? "var(--fg-1)" : "var(--fg-3)",
+          position: "sticky",
+          top: 0,
+          transition: "color 120ms"
+        }
+      }));
+      rows = p.shown.map((rec, i) => ({ n: i + 1, cells: p.cols.map(c => this.makeCell(rec[c[0]], c[1])) }));
+      countStr = p.shown.length.toLocaleString("en-US");
+      msStr = (s.result.ms / 1000).toFixed(3) + "s";
+      limited = p.limited;
+      limitNote = "행 제한 " + s.limit.toLocaleString("en-US") + " 적용 · 원본 " + p.total.toLocaleString("en-US") + "행";
+      shapeLabel = this.SHAPE_LABEL[s.result.shape] || s.result.shape;
+    }
+
+    const runBtnStyle = {
+      display: "flex", alignItems: "center", gap: "8px",
+      fontSize: "13px", fontWeight: 600, color: "#fff",
+      background: "var(--brand)", border: "0", borderRadius: "8px",
+      padding: "8px 18px", cursor: s.running ? "default" : "pointer",
+      opacity: s.running ? 0.8 : 1,
+      boxShadow: "0 0 0 1px rgba(139,92,246,0.4), 0 4px 12px rgba(139,92,246,0.28)",
+      transition: "filter 120ms, transform 80ms"
+    };
+    const rowNumStyle = { textAlign: "right", fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--fg-mute)", height: rowH, fontVariantNumeric: "tabular-nums" };
+
+    return {
+      connLabel: "prod_readonly@10.20.0.14:5432/appdb",
+      sql: s.sql,
+      onSqlInput: this.onSqlInput,
+      onSqlScroll: this.onSqlScroll,
+      onSqlKey: this.onSqlKey,
+      taRef: this.taRef,
+      gutterRef: this.gutterRef,
+      showLineNums,
+      lineNumbers,
+      presets: [
+        { label: "customers ⋈ orders", onClick: () => this.loadPreset("spend") },
+        { label: "customers", onClick: () => this.loadPreset("customers") },
+        { label: "orders", onClick: () => this.loadPreset("orders") },
+        { label: "transactions", onClick: () => this.loadPreset("transactions") }
+      ],
+      onRun: this.onRun,
+      onClear: this.onClear,
+      running: s.running,
+      notRunning: !s.running,
+      runLabel: s.running ? "실행 중" : "실행",
+      runBtnStyle,
+      limit: s.limit,
+      limitOptions: [100, 500, 1000, 5000],
+      onLimitChange: this.onLimitChange,
+      hasResult: !!p,
+      hasError: !!s.error,
+      errCode: s.error ? s.error.code : "",
+      errMsg: s.error ? s.error.message : "",
+      idle: !p && !s.error && !s.running,
+      onExport: this.onExport,
+      columns, rows, countStr, msStr, limited, limitNote, shapeLabel,
+      rowNumStyle
+    };
+  }
+}
+</script>
+</body>
+</html>
