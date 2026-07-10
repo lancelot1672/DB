@@ -1,0 +1,22 @@
+services:
+  sql-grid:
+    build: .
+    image: sql-runner:latest
+    container_name: sql-runner
+    ports:
+      - "8501:8501"
+    # 접속 정보(PG_HOST/PORT/DBNAME/USER/PASSWORD)를 컨테이너 환경변수로 주입.
+    # app.py 의 os.getenv 가 이 값을 읽음 (PG.env 는 이미지에 넣지 않음).
+    env_file:
+      - PG.env
+    # 실행 SQL/오류 로그를 호스트로 보존 (app.py 가 /app/log 에 기록).
+    volumes:
+      - ./log:/app/log
+    restart: unless-stopped
+    networks:
+      - dong-network
+
+networks:
+  # 외부에서 미리 생성한 공용 네트워크에 참여 (docker network create dong-network)
+  dong-network:
+    external: true

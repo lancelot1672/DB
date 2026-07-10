@@ -23,6 +23,11 @@ cp PG.env.example PG.env    # Windows: copy PG.env.example PG.env
 streamlit run app.py
 ```
 
+## Docker
+docker build -t sql-runner .
+docker run -d -p 8501:8501 --env-file PG.env sql-runner
+
+
 ## 파일 구성
 ```
 TIBERO/

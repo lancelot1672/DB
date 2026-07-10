@@ -1,0 +1,10 @@
+2026-07-05 07:17:20,416	RUN	SELECT customer_id, name, email, city, country, signup_date, status FROM customers WHERE status = 'active' ORDER BY signup_date DESC
+2026-07-05 07:17:20,464	DONE	8 rows	0.004s	0.0MB
+2026-07-05 07:23:09,616	RUN	select * from big_orders
+2026-07-05 07:23:11,190	DONE	300000 rows	0.924s	183.1MB
+2026-07-05 08:14:14,496	RUN	SELECT customer_id, name, email, city, country, signup_date, status FROM customers WHERE status = 'active' ORDER BY signup_date DESC
+2026-07-05 08:14:14,549	DONE	8 rows	0.008s	0.0MB
+2026-07-05 08:15:08,341	RUN	select * from tstown.big_order
+2026-07-05 08:15:08,372	ERR	42P01	ERROR:  relation "tstown.big_order" does not exist LINE 1: select * from tstown.big_order                       ^
+2026-07-05 08:15:14,447	RUN	select * from tstown.big_orders
+2026-07-05 08:15:15,615	DONE	300000 rows	0.542s	183.1MB

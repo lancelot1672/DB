@@ -11,7 +11,9 @@ import os
 import re
 import time
 import logging
+import datetime as dt
 from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
 import streamlit as st
@@ -20,7 +22,7 @@ import psycopg2
 
 # streamlit-aggrid 가 있으면 사용, 없으면 st.dataframe 로 폴백
 try:
-    from st_aggrid import AgGrid, GridOptionsBuilder
+    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
     HAS_AGGRID = True
 except Exception:
     HAS_AGGRID = False
@@ -33,8 +35,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, "PG.env")
 LOG_DIR = os.path.join(BASE_DIR, "log")
 
-LIMIT_OPTIONS = [100, 500, 1000, 5000]
-DEFAULT_LIMIT = 1000
+# 그리드 스크롤 조회 시 브라우저 부담 안내 임계치 (행 수)
+LARGE_ROWS_HINT = 100000
 
 # 조회 쿼리에서 차단할 DML/DDL 키워드 (HTML 목업의 가드 규칙과 동일)
 BLOCK_PATTERN = re.compile(
@@ -110,14 +112,8 @@ def validate_sql(raw):
 # ============================================================
 # 4. 쿼리 실행
 # ============================================================
-def run_query(query, limit, params):
-    """
-    읽기 전용 세션으로 쿼리 실행.
-    - 원 쿼리를 서브쿼리로 감싸 LIMIT(limit+1) 적용 -> 초과 여부 판별
-    반환: (df, elapsed_sec, limited)
-    """
-    wrapped = f"SELECT * FROM (\n{query}\n) AS _sub LIMIT {limit + 1}"
-
+def _connect(params):
+    """읽기 전용 세션으로 접속한 커넥션 반환."""
     conn = psycopg2.connect(
         host=params["host"],
         port=params["port"],
@@ -126,38 +122,88 @@ def run_query(query, limit, params):
         password=params["password"],
         connect_timeout=10,
     )
+    # 방어적으로 읽기 전용 세션 강제
+    conn.set_session(readonly=True, autocommit=True)
+    return conn
+
+
+def run_query(query, params):
+    """
+    전체 결과를 한 번에 조회 (단일 사용자 · 그리드 스크롤 조회용).
+    - LIMIT 없이 전량 fetch -> 그리드에서 클라이언트 가상 스크롤로 탐색
+    반환: (df, elapsed_sec)
+    """
+    conn = _connect(params)
     try:
-        # 방어적으로 읽기 전용 세션 강제
-        conn.set_session(readonly=True, autocommit=True)
         start = time.perf_counter()
         with conn.cursor() as cur:
-            cur.execute(wrapped)
+            cur.execute(query)
             cols = [d[0] for d in cur.description]
             rows = cur.fetchall()
         elapsed = time.perf_counter() - start
     finally:
         conn.close()
-
-    limited = len(rows) > limit
-    if limited:
-        rows = rows[:limit]
-
-    df = pd.DataFrame(rows, columns=cols)
-    return df, elapsed, limited
+    return pd.DataFrame(rows, columns=cols), elapsed
 
 
 # ============================================================
 # 5. 결과 렌더링
 # ============================================================
+def _to_cell(v):
+    """AgGrid/JSON 직렬화가 안 되는 값(Decimal, date/datetime 등)을 안전 타입으로 변환.
+    미변환 시 그리드에 '[object Object]' 로 표시됨."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, datetime):
+        return v.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(v, (dt.date, dt.time)):
+        return v.isoformat()
+    return str(v)
+
+
+def grid_safe(df):
+    """object dtype 컬럼의 각 셀을 JSON 안전 타입으로 매핑한 표시용 복사본."""
+    safe = df.copy()
+    for col in safe.columns:
+        if safe[col].dtype == object:
+            safe[col] = safe[col].map(_to_cell)
+    return safe
+
+
 def render_grid(df):
+    df = grid_safe(df)
     if HAS_AGGRID:
         gb = GridOptionsBuilder.from_dataframe(df)
         gb.configure_default_column(sortable=True, filter=True, resizable=True)
-        gb.configure_grid_options(domLayout="normal")
-        AgGrid(df, gridOptions=gb.build(), height=460, theme="alpine",
-               fit_columns_on_grid_load=False, allow_unsafe_jscode=False)
+        # 맨 앞 고정 행번호 컬럼 (현재 표시 순서 기준, 정렬/필터 시 갱신)
+        gb.configure_column(
+            "row_no", headerName="No", pinned="left", width=90,
+            sortable=False, filter=False, suppressMovable=True,
+            valueGetter=JsCode("function(p){ return p.node.rowIndex + 1; }"),
+            cellStyle={"color": "#94a3b8", "textAlign": "right"},
+        )
+        gb.configure_grid_options(
+            domLayout="normal", rowBuffer=30,
+            pagination=False, suppressColumnVirtualisation=False,
+            # 엑셀식: 단일 셀 클릭 선택 표시 + 드래그 범위 선택 (엔터프라이즈 모듈)
+            enableRangeSelection=True,
+            # Ctrl+C 로 선택 범위 복사 (헤더 포함 여부)
+            copyHeadersToClipboard=False,
+            # 우측 세로 스크롤바 항상 표시
+            alwaysShowVerticalScroll=True,
+            suppressHorizontalScroll=False,
+        )
+        AgGrid(df, gridOptions=gb.build(), height=640, theme="alpine",
+               fit_columns_on_grid_load=False, allow_unsafe_jscode=True,
+               enable_enterprise_modules=True)
     else:
-        st.dataframe(df, use_container_width=True, height=460)
+        # 폴백: 1부터 시작하는 행번호를 인덱스로 표시
+        disp = df.copy()
+        disp.index = range(1, len(disp) + 1)
+        disp.index.name = "No"
+        st.dataframe(disp, use_container_width=True, height=640)
 
 
 # ============================================================
@@ -269,17 +315,15 @@ def main():
     st.text_area("SQL", key="sql_input", height=260,
                  placeholder="SELECT ... FROM ... WHERE ...", label_visibility="collapsed")
 
-    tcol1, tcol2, tcol3, tcol4 = st.columns([3, 1.2, 1, 1])
+    tcol1, tcol3, tcol4 = st.columns([4, 1, 1])
     with tcol1:
         st.markdown(
             '<span class="sg-tag">SELECT 전용</span>'
             '<span class="sg-tag">다중문 차단</span>'
-            '<span class="sg-tag">읽기 전용 계정</span>',
+            '<span class="sg-tag">읽기 전용 계정</span>'
+            '<span class="sg-tag">전체 조회 · 스크롤</span>',
             unsafe_allow_html=True,
         )
-    with tcol2:
-        limit = st.selectbox("행 제한", LIMIT_OPTIONS,
-                             index=LIMIT_OPTIONS.index(DEFAULT_LIMIT), label_visibility="collapsed")
     with tcol3:
         st.button("지우기", on_click=clear_sql, use_container_width=True)
     with tcol4:
@@ -294,10 +338,11 @@ def main():
         else:
             logger.info("RUN\t%s", query.replace("\n", " "))
             try:
-                df, elapsed, limited = run_query(query, limit, params)
-                st.session_state.sg_result = {
-                    "df": df, "elapsed": elapsed, "limited": limited, "limit": limit,
-                }
+                with st.spinner("전체 결과 조회 중…"):
+                    df, elapsed = run_query(query, params)
+                mem_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
+                logger.info("DONE\t%s rows\t%.3fs\t%.1fMB", len(df), elapsed, mem_mb)
+                st.session_state.sg_result = {"df": df, "elapsed": elapsed}
                 st.session_state.sg_error = None
             except psycopg2.Error as e:
                 code = getattr(e, "pgcode", "") or ""
@@ -321,18 +366,29 @@ def main():
         st.error(f"**{head}**\n\n```\n{error['message']}\n```")
     elif result:
         df = result["df"]
-        m1, m2, m3, m4 = st.columns([1, 1, 1, 2])
-        m1.markdown(f'조회 건수<br><span class="sg-metric">{len(df):,}</span>', unsafe_allow_html=True)
+        total = len(df)
+        # 결과가 서버(pandas)에서 실제 차지하는 메모리 (문자열 실사용량 포함)
+        mem_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
+
+        m1, m2, m3, m4, m5 = st.columns([1, 1, 1, 1, 2])
+        m1.markdown(f'조회 건수<br><span class="sg-metric">{total:,}</span>', unsafe_allow_html=True)
         m2.markdown(f'수행 시간<br><span class="sg-metric">{result["elapsed"]:.3f}s</span>', unsafe_allow_html=True)
-        m3.markdown(f'컬럼<br><span class="sg-metric">{len(df.columns)}</span>', unsafe_allow_html=True)
-        with m4:
-            if result["limited"]:
-                st.warning(f"행 제한 {result['limit']:,} 적용 (그 이상 존재)")
+        m3.markdown(f'메모리<br><span class="sg-metric">{mem_mb:,.1f} MB</span>', unsafe_allow_html=True)
+        m4.markdown(f'컬럼<br><span class="sg-metric">{len(df.columns)}</span>', unsafe_allow_html=True)
+        with m5:
             csv = ("﻿" + df.to_csv(index=False)).encode("utf-8")
-            st.download_button("⬇ CSV 저장", data=csv,
+            st.download_button(f"⬇ CSV 저장 ({total:,}행)", data=csv,
                                file_name=f"query_result_{datetime.now():%Y%m%d_%H%M%S}.csv",
                                mime="text/csv")
-        render_grid(df)
+
+        if total == 0:
+            st.info("조회 결과가 없습니다. (0건)")
+        else:
+            hint = "셀 클릭/드래그로 범위 선택(엑셀식) · Ctrl+C 로 복사 · 우측 스크롤바로 이동"
+            if total >= LARGE_ROWS_HINT:
+                hint += f" · 전체 {total:,}행 로드(초기 렌더가 다소 걸릴 수 있음)"
+            st.caption(hint)
+            render_grid(df)
     else:
         st.info("쿼리를 실행하면 결과가 여기에 표시됩니다.")
 
