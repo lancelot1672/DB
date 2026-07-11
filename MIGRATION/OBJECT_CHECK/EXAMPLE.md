@@ -127,8 +127,9 @@ Table created.
 - **완료 현황** = STEP 실행 직후 sql/1 의 세부 과정(7개 테이블 생성)을 각 테이블 건수로 검증.
 - 생성 실패/미존재 테이블은 `... FAIL <ORA-..>` 로 표기되어 어느 세부 과정이 빠졌는지 드러난다.
 
-> 원본 `sql/1.ASIS_COPY_DICTIONARY.sql` 은 `ASIS_OGBEKRDB` 토큰 그대로 유지되고,
-> 실행은 `tmp/` 에 치환된 사본으로 이뤄진다.
+> 원본 `sql/1.ASIS_COPY_DICTIONARY.sql` 의 원격 뷰는 링크 없이(`FROM DBA_CONSTRAINTS`) 두고,
+> 실행 시 `tmp/` 사본에서 각 원격 뷰에 선택한 DB LINK 를 붙여(`DBA_CONSTRAINTS@ASIS_DB`) 실행한다.
+> 로컬 복제본 `DBADM.DBA_ASIS_*` 에는 링크가 붙지 않는다.
 
 ## 3. STEP 2 — TOBE 딕셔너리 복제 (로컬)
 
@@ -164,20 +165,18 @@ STEP 2 : 위 SQL을 실행하시겠습니까? [Y/N]: y
 
 ## 4. STEP 3 — ASIS 개수 집계
 
-STEP 1 에서 고른 DB LINK 를 재사용(다시 묻지 않음). 8번 OTHERS OBJECT 블록이 원격
-`DBA_OBJECTS@ASIS_OGBEKRDB` 를 참조하므로 치환된 SQL 이 출력된다.
+STEP 1 에서 복제한 로컬 `DBADM.DBA_ASIS_*` 만 조회하므로 **DB LINK 를 붙이지 않는다**(nolink).
 
 ```
 ============================================================
 [16:20:30] STEP 3 : ASIS object count     -> DBADM.MIG_OBJ_CNT_ASIS
 ============================================================
   Source : /home/oracle/object_check/sql/3.ASIS_OBJECT_COUNT_CREATE.sql
-  DB LINK: ASIS_OGBEKRDB
   ---- SQL ----------------------------------------------------
   | -- 3. ASIS_OBJECT COUNT CREATE
   | DROP TABLE DBADM.MIG_OBJ_CNT_ASIS PURGE;
   | ...
-  | FROM DBA_ASIS_OTHER_OBJECTS A,DBA_OBJECTS@ASIS_OGBEKRDB B
+  | FROM DBA_ASIS_OTHER_OBJECTS A,DBA_OBJECTS B
   | ...
   -------------------------------------------------------------
 STEP 3 : 위 SQL을 실행하시겠습니까? [Y/N]: y
@@ -186,20 +185,29 @@ STEP 3 : 위 SQL을 실행하시겠습니까? [Y/N]: y
   ------------------------------------------------------------
    완료 현황 (ASIS count)
   ------------------------------------------------------------
-  [1/6] CONSTRAINT       ... OK    groups=3  cnt=663
-  [2/6] TABLE            ... OK    groups=2  cnt=158
-  [3/6] TABLE PARITTION  ... OK    (empty, 0 rows)
-  [4/6] INDEX            ... OK    groups=2  cnt=274
-  [5/6] INDEX PARITTION  ... OK    (empty, 0 rows)
-  [6/6] OTHERS OBJECT    ... OK    groups=2  cnt=52
-  => 6/6 complete
+  [1/2] OWNER = EBDBA
+         CONSTRAINT       ... cnt=663
+         TABLE            ... cnt=158
+         TABLE PARITTION  ... cnt=0
+         INDEX            ... cnt=274
+         INDEX PARITTION  ... cnt=0
+         OTHERS OBJECT    ... cnt=52
+         => EBDBA objects total = 1147
+  [2/2] OWNER = PROWORKS
+         CONSTRAINT       ... cnt=40
+         TABLE            ... cnt=26
+         TABLE PARITTION  ... cnt=0
+         INDEX            ... cnt=0
+         INDEX PARITTION  ... cnt=0
+         OTHERS OBJECT    ... cnt=0
+         => PROWORKS objects total = 66
+  => 2 owner(s) checked
   ------------------------------------------------------------
 ```
 
-- 여기서 `groups` = OWNER×세부유형 조합 수, `cnt` = 합계 건수.
-- `(empty, 0 rows)` 는 해당 오브젝트가 대상 범위에 없어 INSERT 결과 0건이라는 의미로,
-  **정상 완료로 간주**되어 `6/6` 에 포함된다(파티션 없는 스키마면 PARITTION 이 0건인 게 정상).
-  실제 오류(테이블 미존재 등)만 `FAIL` 로 표기되어 카운트에서 빠진다.
+- **OWNER별**로 6개 OBJECT 종류의 건수(`cnt`)와 소유자별 합계를 보여준다(항목마다 0.5초 간격).
+- 해당 OWNER 에 특정 오브젝트가 없으면 `cnt=0` 으로 표기(정상). `MIG_OBJ_CNT` 테이블 자체
+  조회 오류만 `FAIL` 로 중단된다.
 
 ## 5. STEP 4 — TOBE 개수 집계
 
@@ -219,15 +227,28 @@ STEP 4 : 위 SQL을 실행하시겠습니까? [Y/N]: y
   ------------------------------------------------------------
    완료 현황 (TOBE count)
   ------------------------------------------------------------
-  [1/6] CONSTRAINT       ... OK    groups=3  cnt=662
-  [2/6] TABLE            ... OK    groups=2  cnt=158
-  [3/6] TABLE PARITTION  ... OK    (empty, 0 rows)
-  [4/6] INDEX            ... OK    groups=2  cnt=274
-  [5/6] INDEX PARITTION  ... OK    (empty, 0 rows)
-  [6/6] OTHERS OBJECT    ... OK    groups=2  cnt=52
-  => 6/6 complete
+  [1/2] OWNER = GEBOWN
+         CONSTRAINT       ... cnt=662
+         TABLE            ... cnt=158
+         TABLE PARITTION  ... cnt=0
+         INDEX            ... cnt=274
+         INDEX PARITTION  ... cnt=0
+         OTHERS OBJECT    ... cnt=52
+         => GEBOWN objects total = 1146
+  [2/2] OWNER = PROWORKS
+         CONSTRAINT       ... cnt=40
+         TABLE            ... cnt=26
+         TABLE PARITTION  ... cnt=0
+         INDEX            ... cnt=0
+         INDEX PARITTION  ... cnt=0
+         OTHERS OBJECT    ... cnt=0
+         => PROWORKS objects total = 66
+  => 2 owner(s) checked
   ------------------------------------------------------------
 ```
+
+> ASIS 는 `EBDBA`, TOBE 는 `GEBOWN` 처럼 OWNER 명이 다를 수 있다. OWNER 매핑 비교는
+> STEP 5(GAP) 에서 수행하고, STEP 3/4 완료 현황은 각 DB 의 실제 OWNER 기준으로 보여준다.
 
 ## 6. STEP 5 — GAP 리포트 (조회 전용)
 

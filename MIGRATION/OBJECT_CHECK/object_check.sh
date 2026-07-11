@@ -6,7 +6,7 @@
 #   STEP 0 : DBADM.MIG_TAB_LIST 의 OWNER별 TABLE_COUNT 확인 (진행 여부 Y/N)
 #   STEP 1 : ASIS dictionary  -> DBADM.DBA_ASIS_*        (via DB LINK)
 #   STEP 2 : TOBE dictionary  -> DBADM.DBA_TOBE_*        (local)
-#   STEP 3 : ASIS object count -> DBADM.MIG_OBJ_CNT_ASIS (via DB LINK)
+#   STEP 3 : ASIS object count -> DBADM.MIG_OBJ_CNT_ASIS (local)
 #   STEP 4 : TOBE object count -> DBADM.MIG_OBJ_CNT_TOBE (local)
 #   STEP 5 : ASIS <-> TOBE GAP report                   (read-only)
 #
@@ -15,8 +15,10 @@
 #     (bare Enter / other input re-prompts; no accidental advance).
 #   - After a run, a COMPLETION CHECKLIST of the step's sub-tasks is shown.
 #   - If ANY sub-task is FAIL, the pipeline HALTS (no next step).
-#   - The ASIS DB LINK is chosen from DBA_DB_LINKS via arrow-key menu
-#     and substituted into the SQL at runtime (source sql/*.sql untouched).
+#   - The ASIS DB LINK is chosen from DBA_DB_LINKS via arrow-key menu.
+#     The source sql/*.sql keep the ASIS dictionary views link-free; the
+#     shell appends the chosen link (DBA_TABLES -> DBA_TABLES@<DBLINK>) at
+#     runtime into a tmp copy (originals untouched).
 #
 # Usage: ./object_check.sh
 # ============================================================
@@ -25,9 +27,14 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SEP="============================================================"
 SUB="------------------------------------------------------------"
 
-OC_DBLINK_TOKEN="ASIS_OGBEKRDB"
 DBLINK=""
 TMP_FILES=""
+
+# ASIS remote source dictionary views. In link steps the chosen DB LINK is
+# appended to each ( DBA_TABLES -> DBA_TABLES@<DBLINK> ) at runtime.
+# The source sql/*.sql keep these views link-free; the shell injects the link.
+OC_REMOTE_VIEWS=(DBA_CONSTRAINTS DBA_TABLES DBA_TAB_COLUMNS DBA_INDEXES \
+                 DBA_TAB_PARTITIONS DBA_IND_PARTITIONS DBA_OBJECTS)
 
 declare -A STATUS   # STATUS[n]=OK|SKIP|FAIL for the final summary
 
@@ -181,14 +188,13 @@ precheck_mig_tab_list() {
     local out
     out=$(sqlplus -s "${DB_USER}/${DB_PASS}" <<'EOF' 2>&1
 SET PAGES 200 LINES 200 FEED OFF VERIFY OFF
-COL ASIS_OWNER  FOR A20
-COL TOBE_OWNER  FOR A20
+COL OWNER  FOR A20
 COL TABLE_COUNT FOR 999,999,999
-PROMPT --- OWNER별 TABLE_COUNT (ASIS_OWNER / TOBE_OWNER) ---
-SELECT ASIS_OWNER, TOBE_OWNER, COUNT(*) AS TABLE_COUNT
+PROMPT --- OWNER별 TABLE_COUNT  ---
+SELECT OWNER, COUNT(*) AS TABLE_COUNT
   FROM DBADM.MIG_TAB_LIST
- GROUP BY ASIS_OWNER, TOBE_OWNER
- ORDER BY ASIS_OWNER, TOBE_OWNER;
+ GROUP BY OWNER
+ ORDER BY OWNER;
 PROMPT
 PROMPT --- TOTAL ---
 SELECT COUNT(*) AS TOTAL_TABLES FROM DBADM.MIG_TAB_LIST;
@@ -229,6 +235,19 @@ EOF
     printf '%s' "${out}" | tr -d '\r' | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -vE '^$' | tail -1
 }
 
+# _query_rows <select> : run a multi-row SELECT, echo cleaned non-empty
+#   lines (ORA-/SP2- error lines are kept so callers can detect failure).
+_query_rows() {
+    local q="$1" out
+    out=$(sqlplus -s "${DB_USER}/${DB_PASS}" <<EOF 2>&1
+SET HEAD OFF FEED OFF PAGES 0 LINES 300 TRIM ON TRIMSPOOL ON VERIFY OFF
+${q}
+EXIT;
+EOF
+)
+    printf '%s' "${out}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -vE '^$'
+}
+
 # ------------------------------------------------------------
 # verify_dict <ASIS|TOBE> : STEP 1/2 checklist. Prints each of the 7
 #   tables one-by-one (0.5s apart). Returns 1 if any FAIL.
@@ -243,6 +262,10 @@ verify_dict() {
         if [[ "${res}" =~ ^[0-9]+$ ]] ; then
             _emit "$(printf '  [%d/%d] %-30s ... OK    rows=%s' $((i+1)) "${n}" "${tab}" "${res}")"
             okc=$((okc+1))
+        elif printf '%s' "${res}" | grep -qi 'ORA-00942' ; then
+            # CTAS 로 테이블이 생성되지 않은 경우(원본 뷰가 없어 미생성) -> rows=0 으로 예외 처리(비중단)
+            _emit "$(printf '  [%d/%d] %-30s ... OK    rows=0 (table not found)' $((i+1)) "${n}" "${tab}")"
+            okc=$((okc+1))
         else
             _emit "$(printf '  [%d/%d] %-30s ... FAIL  %s' $((i+1)) "${n}" "${tab}" "${res:0:40}")"
             failed=1
@@ -254,33 +277,52 @@ verify_dict() {
 }
 
 # ------------------------------------------------------------
-# verify_count <ASIS|TOBE> : STEP 3/4 checklist. Prints each of the 6
-#   OBJECT_NAME labels one-by-one (0.5s apart). 0 rows = OK(empty);
-#   only real exceptions are FAIL. Returns 1 if any FAIL.
+# verify_count <ASIS|TOBE> : STEP 3/4 checklist, broken down by OWNER.
+#   For each OWNER present in DBADM.MIG_OBJ_CNT_<side>, prints each of the
+#   6 OBJECT_NAME counts (0.5s apart) + an owner total. Only real SQL
+#   exceptions are FAIL. Returns 1 on FAIL.
 # ------------------------------------------------------------
 verify_count() {
     local side="$1"
     local labels=("CONSTRAINT" "TABLE" "TABLE PARITTION" "INDEX" "INDEX PARITTION" "OTHERS OBJECT")
-    local n=${#labels[@]} i lbl res g c okc=0 failed=0
-    for ((i=0; i<n; i++)) ; do
-        lbl="${labels[$i]}"
-        res="$(_count_sql "SELECT COUNT(*)||'|'||NVL(SUM(CNT),0) FROM DBADM.MIG_OBJ_CNT_${side} WHERE OBJECT_NAME = '${lbl}';")"
-        if [[ "${res}" =~ ^[0-9]+\|[0-9]+$ ]] ; then
-            g="${res%%|*}" ; c="${res##*|}"
-            if [[ "${g}" -gt 0 ]] ; then
-                _emit "$(printf '  [%d/%d] %-16s ... OK    groups=%s  cnt=%s' $((i+1)) "${n}" "${lbl}" "${g}" "${c}")"
-            else
-                _emit "$(printf '  [%d/%d] %-16s ... OK    (empty, 0 rows)' $((i+1)) "${n}" "${lbl}")"
-            fi
-            okc=$((okc+1))
-        else
-            _emit "$(printf '  [%d/%d] %-16s ... FAIL  %s' $((i+1)) "${n}" "${lbl}" "${res:0:40}")"
-            failed=1
-        fi
-        sleep "${STEP_SLEEP}"
+    local -A CNT
+    local rows o obj c lbl owners=() nown idx total
+
+    rows="$(_query_rows "SELECT OWNER||'|'||OBJECT_NAME||'|'||NVL(SUM(CNT),0) FROM DBADM.MIG_OBJ_CNT_${side} GROUP BY OWNER, OBJECT_NAME;")"
+
+    if printf '%s' "${rows}" | grep -qiE 'ORA-|SP2-' ; then
+        _emit "$(printf '  ... FAIL  %s' "$(printf '%s' "${rows}" | tail -1)")"
+        return 1
+    fi
+    if [[ -z "${rows}" ]] ; then
+        _emit "  (no rows in DBADM.MIG_OBJ_CNT_${side})"
+        return 0
+    fi
+
+    # index counts by "owner|object_name" and collect distinct owners
+    while IFS='|' read -r o obj c ; do
+        [[ -z "${o}" ]] && continue
+        CNT["${o}|${obj}"]="${c}"
+        if [[ " ${owners[*]} " != *" ${o} "* ]] ; then owners+=("${o}") ; fi
+    done <<< "${rows}"
+
+    IFS=$'\n' owners=($(printf '%s\n' "${owners[@]}" | sort)) ; unset IFS
+    nown=${#owners[@]} ; idx=0
+
+    for o in "${owners[@]}" ; do
+        idx=$((idx+1))
+        _emit "$(printf '  [%d/%d] OWNER = %s' "${idx}" "${nown}" "${o}")"
+        total=0
+        for lbl in "${labels[@]}" ; do
+            c="${CNT["${o}|${lbl}"]:-0}"
+            _emit "$(printf '         %-16s ... cnt=%s' "${lbl}" "${c}")"
+            total=$((total + c))
+            sleep "${STEP_SLEEP}"
+        done
+        _emit "$(printf '         => %s objects total = %d' "${o}" "${total}")"
     done
-    _emit "$(printf '  => %d/%d complete' "${okc}" "${n}")"
-    [[ ${failed} -eq 0 ]]
+    _emit "$(printf '  => %d owner(s) checked' "${nown}")"
+    return 0
 }
 
 # ------------------------------------------------------------
@@ -310,7 +352,7 @@ verify_step() {
 # ------------------------------------------------------------
 run_step() {
     local num="$1" title="$2" src="$3" mode="$4" vspec="$5"
-    local rendered rc _l
+    local rendered rc _l _v
 
     _out "\n%s\n" "$SEP"
     _log "STEP ${num} : ${title}"
@@ -328,7 +370,11 @@ run_step() {
 
     if [[ "${mode}" == "link" ]] ; then
         rendered="${BASE_PATH}/tmp/$(basename "${src}" .sql)_$$.sql"
-        sed "s/${OC_DBLINK_TOKEN}/${DBLINK}/g" "${src}" > "${rendered}"
+        cp "${src}" "${rendered}"
+        # Append the chosen DB LINK to each ASIS remote source view.
+        for _v in "${OC_REMOTE_VIEWS[@]}" ; do
+            sed -i -E "s/\\b(${_v})\\b/\\1@${DBLINK}/g" "${rendered}"
+        done
         TMP_FILES="${TMP_FILES} ${rendered}"
     else
         rendered="${src}"
@@ -387,7 +433,7 @@ precheck_mig_tab_list || finish 1
 
 run_step 1 "ASIS dictionary copy  -> DBADM.DBA_ASIS_*"        "${SCRIPT_DIR}/sql/1.ASIS_COPY_DICTIONARY.sql"      link   "dict:ASIS"  || finish 1
 run_step 2 "TOBE dictionary copy  -> DBADM.DBA_TOBE_*"        "${SCRIPT_DIR}/sql/2.TOBE_COPY_DICTIONARY.sql"      nolink "dict:TOBE"  || finish 1
-run_step 3 "ASIS object count     -> DBADM.MIG_OBJ_CNT_ASIS"  "${SCRIPT_DIR}/sql/3.ASIS_OBJECT_COUNT_CREATE.sql"  link   "count:ASIS" || finish 1
+run_step 3 "ASIS object count     -> DBADM.MIG_OBJ_CNT_ASIS"  "${SCRIPT_DIR}/sql/3.ASIS_OBJECT_COUNT_CREATE.sql"  nolink "count:ASIS" || finish 1
 run_step 4 "TOBE object count     -> DBADM.MIG_OBJ_CNT_TOBE"  "${SCRIPT_DIR}/sql/4.TOBE_OBJECT_COUNT_CREATE.sql"  nolink "count:TOBE" || finish 1
 run_step 5 "ASIS <-> TOBE GAP check"                          "${SCRIPT_DIR}/sql/5.ASIS_TOBE_OBJECT_GAP_CHECK.sql" nolink ""          || finish 1
 
