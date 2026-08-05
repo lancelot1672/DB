@@ -15,7 +15,9 @@
       "Bash(find C:/Users/admin/Documents/00.Develop/Migration -type f ! -path */.git/* ! -path */node_modules/* ! -path */__pycache__/*)",
       "Bash(python -m py_compile app.py)",
       "Bash(python -m streamlit version)",
-      "Bash(docker --version)"
+      "Bash(docker --version)",
+      "Bash(bash -n run.sh)",
+      "Bash(bash -n make_wheels.sh)"
     ]
   }
 }

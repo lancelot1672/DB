@@ -37,6 +37,9 @@ WHEEL_DIR = os.path.join(BASE_DIR, "wheels")
 DEFAULT_PORT = 8501
 DEFAULT_HOST = "0.0.0.0"
 MIN_PYTHON = (3, 8)
+# PEP 600(manylinux_x_y) 태그를 인식하는 최소 pip 버전.
+# RHEL 8 python38 기본 pip(19.x)은 pillow/pyarrow 의 manylinux_2_28 휠을 못 읽는다.
+PIP_PEP600_MIN = (20, 3)
 
 # (import 이름, pip 패키지명) — app.py 가 실제로 import 하는 모듈 기준
 REQUIRED_MODULES = [
@@ -110,22 +113,71 @@ def has_offline_wheels():
     )
 
 
+def pip_install_cmd(offline):
+    """pip install 공통 인자 구성."""
+    cmd = [sys.executable, "-m", "pip", "install"]
+    if offline:
+        cmd += ["--no-index", "--find-links", WHEEL_DIR]
+    # venv 가 아니면 시스템 site-packages 오염을 피해 사용자 영역에 설치
+    is_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if not is_venv and not is_root:
+        cmd.append("--user")
+    return cmd
+
+
+def current_pip_version():
+    """(major, minor) 튜플. 확인 불가 시 None."""
+    try:
+        import pip
+        parts = pip.__version__.split(".")
+        return (int(parts[0]), int(parts[1]))
+    except Exception:
+        return None
+
+
+def ensure_pip():
+    """
+    manylinux_2_28 같은 PEP 600 태그는 pip 20.3+ 부터 인식한다.
+    RHEL 8 의 python38 기본 pip 은 19.x 라 pillow / pyarrow 의 manylinux_2_28 휠을
+    '지원하지 않는 플랫폼' 으로 건너뛰어 오프라인 설치가 실패한다. 먼저 pip 을 올린다.
+    """
+    ver = current_pip_version()
+    if ver is None:
+        _warn("pip 버전을 확인하지 못했습니다. 그대로 진행합니다.")
+        return True
+    if ver >= PIP_PEP600_MIN:
+        _ok("pip {}.{}".format(ver[0], ver[1]))
+        return True
+
+    _warn("pip {}.{} — manylinux_2_28(PEP 600) 휠을 인식하지 못합니다. 업그레이드합니다."
+          .format(ver[0], ver[1]))
+    offline = has_offline_wheels()
+    cmd = pip_install_cmd(offline) + ["--upgrade", "pip"]
+    _log("  $ " + " ".join(cmd))
+    if subprocess.call(cmd) != 0:
+        _fail("pip 업그레이드 실패.")
+        if offline:
+            _log("  wheels/ 에 pip 휠이 없는 경우입니다. 인터넷 서버에서 아래로 받아 함께 반입하세요:")
+            _log("    pip download pip -d wheels --only-binary=:all: --python-version 3.8")
+        return False
+    _ok("pip 업그레이드 완료")
+    return True
+
+
 def install_requirements():
     """./wheels 가 있으면 오프라인(--no-index) 설치, 없으면 PyPI 설치."""
     if not os.path.exists(REQ_PATH):
         _fail("requirements.txt 가 없습니다: {}".format(REQ_PATH))
         return False
 
-    cmd = [sys.executable, "-m", "pip", "install", "-r", REQ_PATH]
-    if has_offline_wheels():
-        cmd += ["--no-index", "--find-links", WHEEL_DIR]
+    offline = has_offline_wheels()
+    if offline:
         _log("  (오프라인 설치: {})".format(WHEEL_DIR))
-    # venv 가 아니면 시스템 site-packages 오염을 피해 사용자 영역에 설치
-    is_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
-    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    if not is_venv and not is_root:
-        cmd.append("--user")
+    if not ensure_pip():
+        return False
 
+    cmd = pip_install_cmd(offline) + ["-r", REQ_PATH]
     _log("  $ " + " ".join(cmd))
     return subprocess.call(cmd) == 0
 

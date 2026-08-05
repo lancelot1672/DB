@@ -90,6 +90,11 @@ TIBERO/
 - `app.py` 의 `PRESETS` 샘플 쿼리는 목업 기준(customers/orders/…)이므로 대상 DB 스키마에 맞게 수정.
 - 행 초과 여부는 `LIMIT (n+1)` 로 판별하며, 정확한 원본 총건수는 표시하지 않음(별도 COUNT 필요 시 추가).
 - `PG.env` 는 루트 `.gitignore` 의 `*.env` 로 제외된다. 파일 권한은 `chmod 600` 권장.
+- **대상 서버 설치 시 `No matching distribution` 이 나면** 대개 pip 버전 문제다. RHEL 8 `python38` 의
+  기본 pip 은 19.x 라 `manylinux_2_28`(PEP 600) 태그 휠(pillow, pyarrow 등)을 인식하지 못한다.
+  `make_wheels.sh` 가 `pip/setuptools/wheel` 휠도 함께 받고, `run.sh`/`run.py` 가 설치 전에
+  오프라인으로 pip 을 올린다. 수동으로는:
+  `.venv/bin/python -m pip install --no-index --find-links wheels --upgrade pip`
 - **wheel 수집 시 `No matching distribution` 이 나면** 해당 패키지가 `--platform` 목록에 없는 태그로
   배포된 경우다(pip 은 태그 문자열을 정확히 일치시킨다). `make_wheels.sh` 의 `PLATFORMS` 배열에
   그 태그를 추가한다. 다운로드가 중간에 실패하면 `wheels/` 는 부분 수집 상태이므로 그대로 반입하면

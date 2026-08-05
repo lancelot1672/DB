@@ -65,12 +65,18 @@ setup_venv() {
     fi
     _ok "venv 생성: ${VENV_DIR}"
 
-    # 오프라인이면 pip 업그레이드를 건너뛴다
-    if [ -d "${WHEEL_DIR}" ]; then
-        _log "오프라인 wheels 감지 — pip 업그레이드 생략"
+    # RHEL 8 python38 의 기본 pip 은 19.x 라 manylinux_2_28(PEP 600) 휠을 인식하지 못한다.
+    # → pillow / pyarrow 오프라인 설치가 실패하므로 pip 을 먼저 올린다.
+    if ls "${WHEEL_DIR}"/pip-*.whl >/dev/null 2>&1; then
+        _log "pip 업그레이드 (오프라인: ${WHEEL_DIR})"
+        "${VENV_DIR}/bin/python" -m pip install --no-index --find-links "${WHEEL_DIR}" \
+            --upgrade pip >>"${LOG_FILE}" 2>&1
+    elif [ -d "${WHEEL_DIR}" ]; then
+        _log "wheels/ 에 pip 휠이 없습니다 — run.py 가 다시 시도합니다."
     else
         "${VENV_DIR}/bin/python" -m pip install --upgrade pip >>"${LOG_FILE}" 2>&1
     fi
+    "${VENV_DIR}/bin/python" -m pip -V 2>&1 | tee -a "${LOG_FILE}"
     return 0
 }
 

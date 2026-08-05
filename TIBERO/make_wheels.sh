@@ -29,18 +29,24 @@ ABI="cp38"
 # pandas 처럼 manylinux_2_17_x86_64.manylinux2014_x86_64 로 압축 태그를 쓰는 휠도 있지만,
 # pyarrow 처럼 manylinux_2_17_x86_64 단독 태그로만 배포되는 휠도 있어
 # glibc 2.28(RHEL 8) 에서 설치 가능한 태그를 모두 나열해야 누락되지 않는다.
+#
+# 순서 주의: 구버전 pip 도 읽을 수 있는 manylinux2014/2_17 계열을 앞에 두고,
+# 그 태그로는 배포되지 않는 패키지를 위해 manylinux_2_28 을 마지막에 둔다.
+# (manylinux_2_28 = PEP 600 태그 → 대상 서버 pip 20.3+ 필요. run.py 가 pip 을 먼저 올린다.)
 PLATFORMS=(
-    "manylinux_2_28_x86_64"
-    "manylinux_2_17_x86_64"
     "manylinux2014_x86_64"
+    "manylinux_2_17_x86_64"
     "manylinux_2_12_x86_64"
     "manylinux2010_x86_64"
     "manylinux_2_5_x86_64"
     "manylinux1_x86_64"
+    "manylinux_2_28_x86_64"
 )
+# 대상 서버 pip 이 19.x 면 PEP 600 태그를 못 읽으므로 pip 자체도 함께 반입한다.
+BOOTSTRAP_PKGS=(pip setuptools wheel)
 # 수집 후 존재를 확인할 핵심 패키지 (streamlit 런타임 필수 — 하나라도 없으면 대상 서버에서 설치 실패)
 # 값은 wheel 파일명 앞부분과 비교하므로 배포명 기준으로 적는다 (예: python_dotenv-1.0.1-...whl)
-VERIFY_PKGS=(streamlit pandas numpy pyarrow psycopg2 python_dotenv altair pillow tornado click rich requests protobuf)
+VERIFY_PKGS=(streamlit pandas numpy pyarrow psycopg2 python_dotenv altair pillow tornado click rich requests protobuf pip)
 
 TS=$(date '+%Y%m%d_%H%M%S')
 LOG_DIR="${SCRIPT_DIR}/log"
@@ -96,7 +102,7 @@ if [ -d "${DEST}" ] && [ -n "$(ls -A "${DEST}" 2>/dev/null)" ]; then
 fi
 mkdir -p "${DEST}"
 
-CMD=("${PY}" -m pip download -r "${REQ_FILE}" -d "${DEST}")
+CMD=("${PY}" -m pip download -r "${REQ_FILE}" "${BOOTSTRAP_PKGS[@]}" -d "${DEST}")
 if [ ${NATIVE} -eq 0 ]; then
     # 크로스 다운로드는 소스 빌드를 할 수 없으므로 바이너리 휠만 받는다
     CMD+=(--only-binary=:all: --python-version "${PY_VERSION}" --implementation cp --abi "${ABI}")
