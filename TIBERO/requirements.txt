@@ -1,5 +1,8 @@
 # SQL Grid Web - PostgreSQL 9.6
-# PostgreSQL 9.6 호환 버전으로 고정
+# 실행 환경: RHEL 8.10 x86_64 / Python 3.8 (cp38)
+# 버전은 범위로 두고, pip 가 Requires-Python 메타데이터를 보고
+# Python 3.8 에서 설치 가능한 최신 버전을 자동 선택하도록 한다.
+# (폐쇄망 반입용 wheel 수집은 ./make_wheels.sh 참고)
 streamlit>=1.28,<2
 pandas>=1.5,<3
 psycopg2-binary>=2.9,<3

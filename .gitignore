@@ -1,1 +1,6 @@
 *.env
+# 오프라인 설치용 wheel / 로컬 venv (용량이 커 저장소에 넣지 않는다)
+wheels/
+.venv/
+__pycache__/
+*.pyc
