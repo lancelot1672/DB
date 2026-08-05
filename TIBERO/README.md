@@ -50,7 +50,8 @@ python3.8 run.py            # venv 없이 직접 실행
 
 ```bash
 # [인터넷 서버]
-./make_wheels.sh                       # cp38 / manylinux x86_64 휠을 wheels/ 에 수집
+./make_wheels.sh                       # cp38 / manylinux x86_64 휠을 wheels/ 에 수집 (약 200MB+)
+./make_wheels.sh -c                    # 기존 wheels/ 를 비우고 새로 수집 (부분 수집본 정리)
 ./make_wheels.sh -n                    # 대상 서버에서 직접 받을 때(native)
 tar czf tibero_web.tar.gz app.py run.py run.sh requirements.txt wheels/
 
@@ -89,4 +90,8 @@ TIBERO/
 - `app.py` 의 `PRESETS` 샘플 쿼리는 목업 기준(customers/orders/…)이므로 대상 DB 스키마에 맞게 수정.
 - 행 초과 여부는 `LIMIT (n+1)` 로 판별하며, 정확한 원본 총건수는 표시하지 않음(별도 COUNT 필요 시 추가).
 - `PG.env` 는 루트 `.gitignore` 의 `*.env` 로 제외된다. 파일 권한은 `chmod 600` 권장.
+- **wheel 수집 시 `No matching distribution` 이 나면** 해당 패키지가 `--platform` 목록에 없는 태그로
+  배포된 경우다(pip 은 태그 문자열을 정확히 일치시킨다). `make_wheels.sh` 의 `PLATFORMS` 배열에
+  그 태그를 추가한다. 다운로드가 중간에 실패하면 `wheels/` 는 부분 수집 상태이므로 그대로 반입하면
+  안 되고, `-c` 로 비우고 다시 받는다. 수집 후 핵심 패키지 존재 여부는 스크립트가 자동 검증한다.
 - RHEL 8 의 기본 `python3` 은 3.6 이므로 반드시 `python38` 패키지를 설치해 사용한다.
