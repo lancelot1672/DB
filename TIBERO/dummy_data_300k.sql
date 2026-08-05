@@ -6,9 +6,9 @@
 -- 행 수 조정: 아래 generate_series(1, 300000) 의 숫자만 변경
 -- ============================================================
 
-DROP TABLE IF EXISTS tstown.big_orders;
+DROP TABLE IF EXISTS tibown.big_orders;
 
-CREATE TABLE tstown.big_orders (
+CREATE TABLE tibown.big_orders (
     id            INTEGER PRIMARY KEY,
     customer_id   INTEGER,
     customer_name VARCHAR(50),
@@ -24,7 +24,7 @@ CREATE TABLE tstown.big_orders (
 );
 
 -- 30만 행 일괄 생성 (배열 인덱싱 + random 으로 값 다양화)
-INSERT INTO tstown.big_orders
+INSERT INTO tibown.big_orders
 SELECT
     g                                                              AS id,
     1 + (g % 10000)                                                AS customer_id,
@@ -42,10 +42,10 @@ SELECT
 FROM generate_series(1, 300000) AS g;
 
 -- 통계 갱신 (플래너 최적화)
-ANALYZE tstown.big_orders;
+ANALYZE tibown.big_orders;
 
 COMMIT;
 
 -- 확인용:
---   SELECT count(*) FROM tstown.big_orders;                 -- 300000
---   SELECT * FROM tstown.big_orders ORDER BY id;            -- 그리드 전체 스크롤 테스트
+--   SELECT count(*) FROM tibown.big_orders;                 -- 300000
+--   SELECT * FROM tibown.big_orders ORDER BY id;            -- 그리드 전체 스크롤 테스트

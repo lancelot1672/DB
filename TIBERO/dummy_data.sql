@@ -2,17 +2,17 @@
 -- dummy_data.sql
 -- SQL Grid (TIBERO/app.py) 프리셋 쿼리용 더미 데이터 (PostgreSQL 9.6 호환)
 -- 실행:  psql -h <host> -U <user> -d <dbname> -f dummy_data.sql
--- 앱의 PRESETS(tstown.customers / tstown.orders / tstown.transactions) 컬럼 구조에 맞춤.
+-- 앱의 PRESETS(tibown.customers / tibown.orders / tibown.transactions) 컬럼 구조에 맞춤.
 -- ============================================================
 
-DROP TABLE IF EXISTS tstown.transactions;
-DROP TABLE IF EXISTS tstown.orders;
-DROP TABLE IF EXISTS tstown.customers;
+DROP TABLE IF EXISTS tibown.transactions;
+DROP TABLE IF EXISTS tibown.orders;
+DROP TABLE IF EXISTS tibown.customers;
 
 -- ============================================================
--- 1. tstown.customers
+-- 1. tibown.customers
 -- ============================================================
-CREATE TABLE tstown.customers (
+CREATE TABLE tibown.customers (
     customer_id  INTEGER PRIMARY KEY,
     name         VARCHAR(100),
     email        VARCHAR(200),
@@ -22,7 +22,7 @@ CREATE TABLE tstown.customers (
     status       VARCHAR(20)
 );
 
-INSERT INTO tstown.customers (customer_id, name, email, city, country, signup_date, status) VALUES
+INSERT INTO tibown.customers (customer_id, name, email, city, country, signup_date, status) VALUES
     (1,  'Alice Kim',      'alice@example.com',   'Seoul',      'KR', '2025-01-05', 'active'),
     (2,  'Bob Lee',        'bob@example.com',     'Busan',      'KR', '2025-02-11', 'active'),
     (3,  'Carol Park',     'carol@example.com',   'Incheon',    'KR', '2025-03-02', 'inactive'),
@@ -35,18 +35,18 @@ INSERT INTO tstown.customers (customer_id, name, email, city, country, signup_da
     (10, 'Jack Oh',        'jack@example.com',    'London',     'UK', '2025-06-20', 'active');
 
 -- ============================================================
--- 2. tstown.orders
+-- 2. tibown.orders
 -- ============================================================
-CREATE TABLE tstown.orders (
+CREATE TABLE tibown.orders (
     order_id     INTEGER PRIMARY KEY,
-    customer_id  INTEGER REFERENCES tstown.customers(customer_id),
+    customer_id  INTEGER REFERENCES tibown.customers(customer_id),
     order_date   DATE,
     amount       NUMERIC(12,2),
     status       VARCHAR(20),
     channel      VARCHAR(20)
 );
 
-INSERT INTO tstown.orders (order_id, customer_id, order_date, amount, status, channel) VALUES
+INSERT INTO tibown.orders (order_id, customer_id, order_date, amount, status, channel) VALUES
     (1001, 1, '2026-01-10',  120000.00, 'paid',      'web'),
     (1002, 1, '2026-02-14',   85000.00, 'paid',      'mobile'),
     (1003, 2, '2026-01-22',  240000.00, 'paid',      'web'),
@@ -61,11 +61,11 @@ INSERT INTO tstown.orders (order_id, customer_id, order_date, amount, status, ch
     (1012, 10,'2026-02-28',  760000.00, 'paid',      'web');
 
 -- ============================================================
--- 3. tstown.transactions
+-- 3. tibown.transactions
 -- ============================================================
-CREATE TABLE tstown.transactions (
+CREATE TABLE tibown.transactions (
     txn_id        INTEGER PRIMARY KEY,
-    order_id      INTEGER REFERENCES tstown.orders(order_id),
+    order_id      INTEGER REFERENCES tibown.orders(order_id),
     method        VARCHAR(20),
     amount        NUMERIC(12,2),
     currency      VARCHAR(10),
@@ -73,7 +73,7 @@ CREATE TABLE tstown.transactions (
     state         VARCHAR(20)
 );
 
-INSERT INTO tstown.transactions (txn_id, order_id, method, amount, currency, processed_at, state) VALUES
+INSERT INTO tibown.transactions (txn_id, order_id, method, amount, currency, processed_at, state) VALUES
     (5001, 1001, 'card',     120000.00, 'KRW', '2026-01-10 10:12:03', 'settled'),
     (5002, 1002, 'card',      85000.00, 'KRW', '2026-02-14 14:31:55', 'settled'),
     (5003, 1003, 'transfer', 240000.00, 'KRW', '2026-01-22 09:05:20', 'settled'),
