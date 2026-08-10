@@ -101,3 +101,8 @@ parfile 을 만들고 DDL 을 추출한다. Streamlit 생성기와 shell 스크�
 - **메모리 표기**: 결과가 서버에서 차지하는 메모리를 `df.memory_usage(deep=True)` 로 계산해 메트릭에 표시한다.
 - **더미 데이터**: `dummy_data.sql`(소량, `tstown` 스키마), `dummy_data_300k.sql`(`generate_series` 로
   30만 행 대량 생성) 로 대량 조회를 테스트할 수 있다.
+- **조회 SQL 저장**: `queries/saved_queries.json`(경로는 `SQLGRID_QUERY_FILE` / `run.py --queries` 로 변경)
+  한 파일에 저장한다. 읽기 전용 계정이므로 DB 에는 쓰지 않는다. **저장·가져오기 시점에도
+  `validate_sql()` 을 통과한 쿼리만 받아들인다** — 저장 기능이 조회 전용 가드의 우회로가 되면 안 된다.
+  쓰기는 `commit_store()` 가 디스크 최신본을 다시 읽어 병합한 뒤 tmp + `os.replace` 로 원자 교체한다.
+  `st.session_state.sql_input` 대입은 반드시 `on_click` 콜백 안에서 한다(위젯 생성 후에는 불가).

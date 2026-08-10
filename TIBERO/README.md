@@ -10,6 +10,24 @@ SQL 을 붙여넣고 실행하면 결과를 그리드로 조회하는 Streamlit 
 - CSV 다운로드 (UTF-8 BOM)
 - 읽기 전용 세션(`set_session(readonly=True)`) + 실행 SQL/시각 로깅(`log/`)
 - 그리드: `streamlit-aggrid`(정렬/필터), 미설치 시 `st.dataframe` 자동 폴백
+- **조회 SQL 저장** — 이름을 붙여 저장하고 사이드바에서 불러오기/이름변경/삭제, JSON 내보내기·가져오기
+
+## 조회 SQL 저장
+
+편집기의 `💾 저장` 으로 현재 SQL 에 이름을 붙여 저장하면, 왼쪽 사이드바에서 다시 불러올 수 있다.
+저장분은 `queries/saved_queries.json` 한 파일에 담긴다 (DB 에 쓰지 않는다 — 읽기 전용 계정이므로).
+
+```bash
+./run.sh --queries /var/lib/sqlgrid/saved_queries.json   # 앱 바깥에 두면 재배포해도 남는다
+```
+
+- **가드**: 저장·가져오기 시점에도 `SELECT`/`WITH` 검사를 통과한 쿼리만 받는다. 파일을 손으로 편집해
+  DML 을 넣어도 실행 단계에서 다시 차단된다.
+- **백업**: 이 파일 하나만 복사하면 된다. 사이드바 `내보내기 / 가져오기` 로 JSON 반출/반입도 가능하다.
+- **반출 주의**: 자격증명은 없지만 사내 스키마/테이블명이 담기므로 `.gitignore` 대상이며
+  `package.sh` 배포 tar 에도 포함되지 않는다.
+- 파일이 깨지면 앱이 죽지 않고 `saved_queries.json.bak` 으로 보존한 뒤 빈 목록으로 시작한다.
+- 상한: 200건 / 이름 60자 / SQL 200,000자.
 
 ## 설치 / 실행 (RHEL 8.10 + Python 3.8)
 
@@ -39,6 +57,7 @@ chmod +x run.sh make_wheels.sh
 ```bash
 ./run.sh --port 8600        # 포트 변경 (사용 중이면 자동으로 다음 포트)
 ./run.sh --host 127.0.0.1   # 로컬 전용 바인드
+./run.sh --queries /var/lib/sqlgrid/saved_queries.json   # 저장 쿼리 파일 위치 지정
 ./run.sh --browser          # 데스크톱 환경에서 브라우저 자동 오픈
 PYTHON_BIN=/usr/bin/python3.8 ./run.sh
 python3.8 run.py            # venv 없이 직접 실행
@@ -79,6 +98,7 @@ TIBERO/
 ├── make_wheels.sh       # 폐쇄망 반입용 wheel 수집 (cp38/manylinux)
 ├── requirements.txt     # 의존성 (Python 3.8 에서 설치 가능한 버전으로 자동 해석)
 ├── PG.env               # 실제 접속 정보 (git 제외, chmod 600)
+├── queries/             # 저장한 조회 SQL (saved_queries.json, git 제외 / 자동 생성)
 ├── wheels/              # 오프라인 설치용 wheel (git 제외)
 ├── .venv/               # run.sh 가 만드는 가상환경 (git 제외)
 ├── log/                 # 실행 SQL/오류 로그 (자동 생성)

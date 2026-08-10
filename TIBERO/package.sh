@@ -8,7 +8,7 @@
 #   ./package.sh -s           # wheels 의존성 폐쇄 검증 생략
 #
 # 포함: app.py run.py run.sh start.sh make_wheels.sh requirements.txt wheels/ 문서 더미SQL
-# 제외: PG.env(자격증명) .venv/(445M) tbcheck(596M) dist/ log/ __pycache__ *.swp .git
+# 제외: PG.env(자격증명) queries/(저장 쿼리) .venv/(445M) tbcheck(596M) dist/ log/ __pycache__ *.swp .git
 #
 # 반입 후 대상 서버(RHEL 8.10 / Python 3.8):
 #   tar xzf tibero_sqlgrid_<ts>.tar.gz && cd tibero_sqlgrid
@@ -215,7 +215,8 @@ _log "  크기   : ${SIZE} (항목 ${ENTRIES} 개, wheel ${WHEEL_COUNT} 개)"
 [ -f "${SUMFILE}" ] && _log "  체크섬 : ${SUMFILE}"
 
 # 반출되면 안 되는 것이 섞였는지 최종 확인 — 스테이징 실수에 대한 안전망
-LEAK=$(tar tzf "${TARBALL}" | grep -E "(^|/)(\.venv/|tbcheck$|__pycache__/|\.git/)|\.pyc$|\.swp$" | head -5)
+# queries/ = 사용자가 저장한 조회 SQL(사내 스키마/테이블명). 대상 서버에서 새로 만들어진다.
+LEAK=$(tar tzf "${TARBALL}" | grep -E "(^|/)(\.venv/|tbcheck$|__pycache__/|\.git/|queries/)|\.pyc$|\.swp$" | head -5)
 if [ -n "${LEAK}" ]; then
     _fail "제외 대상이 포함됐습니다:"
     echo "${LEAK}" | tee -a "${LOG_FILE}"
@@ -225,7 +226,7 @@ if [ ${WITH_ENV} -eq 0 ] && tar tzf "${TARBALL}" | grep -qE "(^|/)PG\.env$"; the
     _fail "PG.env 가 포함됐습니다 (의도치 않은 자격증명 반출)."
     exit 1
 fi
-_ok "제외 항목 확인 완료 (.venv / tbcheck / log / __pycache__ 미포함)"
+_ok "제외 항목 확인 완료 (.venv / tbcheck / log / queries / __pycache__ 미포함)"
 
 _log ""
 _log "폐쇄망 반입 후:"

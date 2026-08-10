@@ -10,10 +10,12 @@ SQL Grid Web 실행 런처 (RHEL 8.10 / Python 3.8, Docker 없이 실행)
     python3.8 run.py --host 127.0.0.1    # 로컬 전용
     python3.8 run.py --browser           # 데스크톱 환경에서 브라우저 자동 오픈
     python3.8 run.py -y                  # 확인 프롬프트 자동 승인 (폐쇄망 무인 설치)
+    python3.8 run.py --queries /var/lib/sqlgrid/saved_queries.json   # 저장 쿼리 파일 위치 지정
     ./run.sh                             # venv 생성/활성화까지 포함한 래퍼
 
 --port 는 웹 서비스 포트이고, DB 포트는 접속 정보 파일의 PG_PORT 다 (서로 다름).
---env 로 준 경로는 SQLGRID_ENV_FILE 환경 변수로 app.py 에 전달된다.
+--env 로 준 경로는 SQLGRID_ENV_FILE, --queries 는 SQLGRID_QUERY_FILE 환경 변수로 app.py 에 전달된다.
+--queries 를 앱 디렉터리 바깥으로 지정하면 재배포(tar 해제)로 앱을 갈아엎어도 저장 쿼리가 남는다.
 
 동작:
   1) Python / 의존성 확인 → 누락 시 y/N 확인 후 설치
@@ -36,6 +38,7 @@ import webbrowser
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_PATH = os.path.join(BASE_DIR, "app.py")
 DEFAULT_ENV_PATH = os.path.join(BASE_DIR, "PG.env")
+DEFAULT_QUERY_PATH = os.path.join(BASE_DIR, "queries", "saved_queries.json")
 REQ_PATH = os.path.join(BASE_DIR, "requirements.txt")
 LOG_DIR = os.path.join(BASE_DIR, "log")
 WHEEL_DIR = os.path.join(BASE_DIR, "wheels")
@@ -305,7 +308,7 @@ def open_browser_later(url, delay=3.0):
     ).start()
 
 
-def run_streamlit(host, port, open_browser, env_path):
+def run_streamlit(host, port, open_browser, env_path, query_path):
     os.makedirs(LOG_DIR, exist_ok=True)
     local_url = "http://localhost:{}".format(port)
     cmd = [
@@ -331,9 +334,10 @@ def run_streamlit(host, port, open_browser, env_path):
         open_browser_later(local_url)
 
     # app.py 는 CLI 인자를 받을 수 없으므로(streamlit run 이 가로챈다)
-    # 접속 정보 파일 경로는 환경 변수로 넘긴다.
+    # 접속 정보 / 저장 쿼리 파일 경로는 환경 변수로 넘긴다.
     child_env = os.environ.copy()
     child_env["SQLGRID_ENV_FILE"] = env_path
+    child_env["SQLGRID_QUERY_FILE"] = query_path
 
     try:
         return subprocess.call(cmd, cwd=BASE_DIR, env=child_env)
@@ -352,6 +356,9 @@ def main():
                         help="브라우저 자동 오픈 (데스크톱 환경에서만)")
     parser.add_argument("-e", "--env", default=os.environ.get("SQLGRID_ENV_FILE") or DEFAULT_ENV_PATH,
                         help="DB 접속 정보 파일 (기본 {})".format(os.path.basename(DEFAULT_ENV_PATH)))
+    parser.add_argument("-q", "--queries",
+                        default=os.environ.get("SQLGRID_QUERY_FILE") or DEFAULT_QUERY_PATH,
+                        help="저장 쿼리 파일 (기본 queries/saved_queries.json)")
     parser.add_argument("-y", "--yes", action="store_true",
                         help="확인 프롬프트를 자동 승인 (폐쇄망 무인 설치)")
     args = parser.parse_args()
@@ -361,6 +368,7 @@ def main():
 
     # 상대 경로로 줘도 되도록 정규화 (app.py 는 BASE_DIR 에서 실행되므로 절대경로가 필요)
     env_path = os.path.abspath(os.path.expanduser(args.env))
+    query_path = os.path.abspath(os.path.expanduser(args.queries))
 
     _log("=" * 56)
     _log(" SQL Grid Web (PostgreSQL 9.6) - 조회 전용")
@@ -387,7 +395,10 @@ def main():
     if port != args.port:
         _warn("{} 포트가 사용 중이라 {} 로 실행합니다.".format(args.port, port))
 
-    return run_streamlit(args.host, port, args.browser, env_path)
+    _log("       저장 쿼리: {}{}".format(
+        query_path, "" if os.path.exists(query_path) else "  (아직 없음 - 첫 저장 시 생성)"))
+
+    return run_streamlit(args.host, port, args.browser, env_path, query_path)
 
 
 if __name__ == "__main__":
