@@ -3,11 +3,17 @@
 """
 SQL Grid Web 실행 런처 (RHEL 8.10 / Python 3.8, Docker 없이 실행)
 
-    python3.8 run.py                  # 0.0.0.0:8501 로 기동
-    python3.8 run.py --port 8600
-    python3.8 run.py --host 127.0.0.1 # 로컬 전용
-    python3.8 run.py --browser        # 데스크톱 환경에서 브라우저 자동 오픈
-    ./run.sh                          # venv 생성/활성화까지 포함한 래퍼
+    python3.8 run.py                     # 0.0.0.0:8501 로 기동 (PG.env 사용)
+    python3.8 run.py --port 8600         # 웹 서비스 포트 변경
+    python3.8 run.py --env PG_DEV.env    # 다른 DB 접속 정보 파일로 기동
+    python3.8 run.py --env PG_DEV.env --port 8600
+    python3.8 run.py --host 127.0.0.1    # 로컬 전용
+    python3.8 run.py --browser           # 데스크톱 환경에서 브라우저 자동 오픈
+    python3.8 run.py -y                  # 확인 프롬프트 자동 승인 (폐쇄망 무인 설치)
+    ./run.sh                             # venv 생성/활성화까지 포함한 래퍼
+
+--port 는 웹 서비스 포트이고, DB 포트는 접속 정보 파일의 PG_PORT 다 (서로 다름).
+--env 로 준 경로는 SQLGRID_ENV_FILE 환경 변수로 app.py 에 전달된다.
 
 동작:
   1) Python / 의존성 확인 → 누락 시 y/N 확인 후 설치
@@ -29,7 +35,7 @@ import webbrowser
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_PATH = os.path.join(BASE_DIR, "app.py")
-ENV_PATH = os.path.join(BASE_DIR, "PG.env")
+DEFAULT_ENV_PATH = os.path.join(BASE_DIR, "PG.env")
 REQ_PATH = os.path.join(BASE_DIR, "requirements.txt")
 LOG_DIR = os.path.join(BASE_DIR, "log")
 WHEEL_DIR = os.path.join(BASE_DIR, "wheels")
@@ -65,24 +71,35 @@ PG_PASSWORD=
 # 출력 헬퍼
 # ============================================================
 def _log(msg):
-    print(msg)
+    # flush: 로그 파일로 리다이렉트하면 stdout 이 블록 버퍼링되어,
+    # Ctrl+C / kill 로 끝낼 때 점검 메시지가 통째로 사라진다.
+    print(msg, flush=True)
 
 
 def _ok(msg):
-    print("  [OK] {}".format(msg))
+    print("  [OK] {}".format(msg), flush=True)
 
 
 def _fail(msg):
-    print("  [FAIL] {}".format(msg))
+    print("  [FAIL] {}".format(msg), flush=True)
 
 
 def _warn(msg):
-    print("  [WARN] {}".format(msg))
+    print("  [WARN] {}".format(msg), flush=True)
+
+
+# --yes 로 켜진다. 폐쇄망 서버에 스크립트로 배포할 때 대화식 프롬프트를 없앤다.
+ASSUME_YES = False
 
 
 def _confirm(question):
     """설치 등 부수효과 있는 작업 전 y/N 확인 (레포 공통 규약)."""
+    if ASSUME_YES:
+        _log("{} (y/N): y  [--yes]".format(question))
+        return True
     if not sys.stdin.isatty():
+        # 파이프/nohup 으로 돌리면 물어볼 수 없다. 임의로 설치하지 않고 --yes 를 안내한다.
+        _warn("대화형 입력이 불가능합니다 (stdin 이 터미널이 아님). 자동 승인하려면 --yes")
         return False
     try:
         return input("{} (y/N): ".format(question)).strip().lower() == "y"
@@ -226,26 +243,31 @@ def read_env_file(path):
     return values
 
 
-def check_env():
-    if not os.path.exists(ENV_PATH):
-        _fail("PG.env 가 없습니다.")
-        if _confirm("  템플릿을 생성할까요? ({})".format(ENV_PATH)):
-            with open(ENV_PATH, "w", encoding="utf-8") as f:
+def check_env(env_path):
+    name = os.path.basename(env_path)
+    if not os.path.exists(env_path):
+        _fail("접속 정보 파일이 없습니다: {}".format(env_path))
+        # --env 로 지정한 경로가 오타인 경우가 많으므로 템플릿 생성은 기본 경로에서만.
+        if env_path != DEFAULT_ENV_PATH:
+            _log("  경로를 확인하세요. 기본 파일로 실행하려면 --env 를 빼고 실행합니다.")
+            return False
+        if _confirm("  템플릿을 생성할까요? ({})".format(env_path)):
+            with open(env_path, "w", encoding="utf-8") as f:
                 f.write(ENV_TEMPLATE)
-            os.chmod(ENV_PATH, 0o600)
-            _log("\n생성했습니다. PG.env 에 접속 정보를 채운 뒤 다시 실행하세요:")
-            _log("  {}".format(ENV_PATH))
+            os.chmod(env_path, 0o600)
+            _log("\n생성했습니다. {} 에 접속 정보를 채운 뒤 다시 실행하세요:".format(name))
+            _log("  {}".format(env_path))
         return False
 
-    values = read_env_file(ENV_PATH)
+    values = read_env_file(env_path)
     empty = [k for k in ENV_KEYS if not values.get(k)]
     if empty:
-        _fail("PG.env 의 값이 비어 있습니다: {}".format(", ".join(empty)))
-        _log("  {} 를 편집한 뒤 다시 실행하세요.".format(ENV_PATH))
+        _fail("{} 의 값이 비어 있습니다: {}".format(name, ", ".join(empty)))
+        _log("  {} 를 편집한 뒤 다시 실행하세요.".format(env_path))
         return False
 
-    _ok("PG.env — {}@{}:{}/{}".format(values["PG_USER"], values["PG_HOST"],
-                                      values["PG_PORT"], values["PG_DBNAME"]))
+    _ok("{} — {}@{}:{}/{}".format(name, values["PG_USER"], values["PG_HOST"],
+                                  values["PG_PORT"], values["PG_DBNAME"]))
     return True
 
 
@@ -283,7 +305,7 @@ def open_browser_later(url, delay=3.0):
     ).start()
 
 
-def run_streamlit(host, port, open_browser):
+def run_streamlit(host, port, open_browser, env_path):
     os.makedirs(LOG_DIR, exist_ok=True)
     local_url = "http://localhost:{}".format(port)
     cmd = [
@@ -308,8 +330,13 @@ def run_streamlit(host, port, open_browser):
     if open_browser:
         open_browser_later(local_url)
 
+    # app.py 는 CLI 인자를 받을 수 없으므로(streamlit run 이 가로챈다)
+    # 접속 정보 파일 경로는 환경 변수로 넘긴다.
+    child_env = os.environ.copy()
+    child_env["SQLGRID_ENV_FILE"] = env_path
+
     try:
-        return subprocess.call(cmd, cwd=BASE_DIR)
+        return subprocess.call(cmd, cwd=BASE_DIR, env=child_env)
     except KeyboardInterrupt:
         _log("\n종료했습니다.")
         return 0
@@ -323,7 +350,17 @@ def main():
                         help="바인드 주소 (기본 {}, 로컬 전용은 127.0.0.1)".format(DEFAULT_HOST))
     parser.add_argument("--browser", action="store_true",
                         help="브라우저 자동 오픈 (데스크톱 환경에서만)")
+    parser.add_argument("-e", "--env", default=os.environ.get("SQLGRID_ENV_FILE") or DEFAULT_ENV_PATH,
+                        help="DB 접속 정보 파일 (기본 {})".format(os.path.basename(DEFAULT_ENV_PATH)))
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="확인 프롬프트를 자동 승인 (폐쇄망 무인 설치)")
     args = parser.parse_args()
+
+    global ASSUME_YES
+    ASSUME_YES = args.yes
+
+    # 상대 경로로 줘도 되도록 정규화 (app.py 는 BASE_DIR 에서 실행되므로 절대경로가 필요)
+    env_path = os.path.abspath(os.path.expanduser(args.env))
 
     _log("=" * 56)
     _log(" SQL Grid Web (PostgreSQL 9.6) - 조회 전용")
@@ -338,7 +375,7 @@ def main():
         return 1
 
     _log("[2/3] 접속 정보 확인...")
-    if not check_env():
+    if not check_env(env_path):
         return 1
 
     _log("[3/3] 앱 실행...")
@@ -350,7 +387,7 @@ def main():
     if port != args.port:
         _warn("{} 포트가 사용 중이라 {} 로 실행합니다.".format(args.port, port))
 
-    return run_streamlit(args.host, port, args.browser)
+    return run_streamlit(args.host, port, args.browser, env_path)
 
 
 if __name__ == "__main__":

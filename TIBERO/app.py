@@ -32,7 +32,9 @@ except Exception:
 # 0. 상수 / 설정
 # ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, "PG.env")
+# 접속 정보 파일. run.py --env 로 다른 파일을 지정하면 SQLGRID_ENV_FILE 로 전달된다.
+# (여러 DB 를 번갈아 볼 때 PG.env 를 덮어쓰지 않고 파일만 바꿔 끼우기 위함)
+ENV_PATH = os.environ.get("SQLGRID_ENV_FILE") or os.path.join(BASE_DIR, "PG.env")
 LOG_DIR = os.path.join(BASE_DIR, "log")
 
 # 그리드 스크롤 조회 시 브라우저 부담 안내 임계치 (행 수)
@@ -51,7 +53,9 @@ START_PATTERN = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 # ============================================================
 def load_conn_params():
     """PG.env 에서 접속 정보 로딩. 코드에 하드코딩하지 않는다."""
-    load_dotenv(ENV_PATH)
+    # override=True: 지정한 env 파일 값이 항상 이긴다. 기본값(False)이면 이미
+    # os.environ 에 있는 PG_* 가 남아 있어 --env 로 파일을 바꿔도 반영되지 않는다.
+    load_dotenv(ENV_PATH, override=True)
     return {
         "host": os.getenv("PG_HOST", "localhost"),
         "port": os.getenv("PG_PORT", "5432"),

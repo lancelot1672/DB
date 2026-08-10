@@ -7,6 +7,13 @@
 #   ./make_wheels.sh -n           # 현재 실행 중인 파이썬 환경 기준(native)으로 내려받기
 #   ./make_wheels.sh -d /path/dir # 저장 위치 지정 (기본 ./wheels)
 #
+# !! 반드시 Python 3.8 로 실행할 것 (pip 22.0 이상).
+#    pip 의 --python-version 은 wheel 태그 선택에만 적용되고 환경 마커
+#    (python_version < '3.9') 평가에는 적용되지 않는다. 3.9+ 로 수집하면
+#    importlib-resources / pkgutil-resolve-name / zipp 이 조용히 누락된다.
+#    스크립트가 python3.8 을 자동 탐색하며, 아니면 실행을 거부한다.
+#      PYTHON_BIN=/usr/bin/python3.8 ./make_wheels.sh
+#
 # 인터넷이 되는 서버에서 실행한 뒤, wheels/ 디렉터리를 대상 서버의
 # TIBERO/wheels 로 복사하면 run.sh / run.py 가 --no-index 로 설치한다.
 #
@@ -77,11 +84,78 @@ done
 
 [ -f "${REQ_FILE}" ] || { _fail "requirements.txt 가 없습니다: ${REQ_FILE}"; exit 1; }
 
-PY="${PYTHON_BIN:-python3}"
-command -v "${PY}" >/dev/null 2>&1 || { _fail "python 을 찾을 수 없습니다 (PYTHON_BIN 지정)"; exit 1; }
+#-----------------------------------------------------------
+# 실행 인터프리터 결정 — 반드시 Python 3.8 이어야 한다
+#
+# pip 의 --python-version 은 "wheel 태그 선택" 에만 적용되고
+# 환경 마커(python_version < '3.9' 등) 평가에는 적용되지 않는다.
+# 마커는 항상 '실행 중인 인터프리터' 기준으로 평가되므로, 3.9+ 로 수집하면
+#   jsonschema → importlib-resources / pkgutil-resolve-name   (python_version < '3.9')
+#   importlib-resources → zipp                                (python_version < '3.10')
+# 같은 3.8 전용 의존성이 조용히 빠진다. 다운로드는 성공으로 끝나지만
+# 대상 서버에서 "No matching distribution found for importlib-resources" 로 실패한다.
+#-----------------------------------------------------------
+find_python() {
+    local cand
+    if [ -n "${PYTHON_BIN}" ]; then
+        command -v "${PYTHON_BIN}" >/dev/null 2>&1 && { echo "${PYTHON_BIN}"; return 0; }
+        return 1
+    fi
+    # .venv 를 먼저 본다 — RHEL 8 의 /usr/bin/python3.8 은 pip 19.x 라 크로스 수집을 못 한다.
+    for cand in "${SCRIPT_DIR}/.venv/bin/python" python3.8 /usr/bin/python3.8; do
+        command -v "${cand}" >/dev/null 2>&1 || continue
+        "${cand}" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3,8) else 1)' 2>/dev/null \
+            && { echo "${cand}"; return 0; }
+    done
+    [ ${NATIVE} -eq 1 ] && command -v python3 >/dev/null 2>&1 && { echo "python3"; return 0; }
+    return 1
+}
 
+PY=$(find_python)
+if [ -z "${PY}" ]; then
+    _fail "Python 3.8 인터프리터를 찾을 수 없습니다."
+    _fail "  수집은 반드시 3.8 로 실행해야 합니다 (환경 마커가 실행 인터프리터 기준으로 평가됨)."
+    _fail "  RHEL 8: sudo dnf install -y python38"
+    _fail "  또는  : PYTHON_BIN=/path/to/python3.8 $0"
+    exit 1
+fi
+command -v "${PY}" >/dev/null 2>&1 || { _fail "python 을 찾을 수 없습니다: ${PY}"; exit 1; }
+
+PY_MM=$("${PY}" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
 _log "python : $(${PY} -V 2>&1) (${PY})"
 _log "pip    : $(${PY} -m pip -V 2>&1)"
+
+if [ "${PY_MM}" != "${PY_VERSION}" ]; then
+    if [ ${NATIVE} -eq 1 ]; then
+        _fail "native 모드인데 현재 파이썬이 ${PY_MM} 입니다 (대상 환경은 ${PY_VERSION})."
+        _fail "  대상 서버의 python3.8 로 실행하세요."
+        exit 1
+    fi
+    _fail "수집 인터프리터가 Python ${PY_MM} 입니다 — 반드시 ${PY_VERSION} 이어야 합니다."
+    _fail "  --python-version ${PY_VERSION} 은 wheel 태그에만 적용되고 환경 마커에는 적용되지 않습니다."
+    _fail "  ${PY_MM} 로 수집하면 3.8 전용 의존성(importlib-resources, pkgutil-resolve-name, zipp)이"
+    _fail "  조용히 누락되고, 대상 서버 설치 시점에야 실패합니다."
+    _fail "  PYTHON_BIN=/usr/bin/python3.8 $0"
+    exit 1
+fi
+
+# 크로스 수집은 --platform 다중 지정이 필요하다. pip 22.0 미만은 --platform 을
+# 단일 값으로 처리해(마지막 값만 적용) pandas 등에서 'No matching distribution' 이 난다.
+# manylinux_2_28(PEP 600) 태그 인식도 pip 20.3+ 부터다.
+PIP_MM=$("${PY}" -c 'import pip,sys; sys.stdout.write(".".join(pip.__version__.split(".")[:2]))' 2>/dev/null)
+if [ ${NATIVE} -eq 0 ]; then
+    if [ -z "${PIP_MM}" ]; then
+        _fail "pip 버전을 확인할 수 없습니다: ${PY} -m pip -V"
+        exit 1
+    fi
+    if [ "$(printf '%s\n22.0\n' "${PIP_MM}" | sort -V | head -1)" != "22.0" ]; then
+        _fail "pip ${PIP_MM} — 크로스 수집에는 pip 22.0 이상이 필요합니다."
+        _fail "  (22.0 미만은 --platform 다중 지정을 무시하고 마지막 값만 사용합니다)"
+        _fail "  ${PY} -m pip install --user -U pip"
+        _fail "  또는 pip 이 최신인 venv 로: PYTHON_BIN=${SCRIPT_DIR}/.venv/bin/python $0"
+        exit 1
+    fi
+fi
 _log "대상   : $([ ${NATIVE} -eq 1 ] && echo 'native (현재 환경)' || echo "cp38 / ${PLATFORMS[0]} 외")"
 _log "저장   : ${DEST}"
 
@@ -147,6 +221,33 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 _ok "핵심 패키지 확인 완료 (${#VERIFY_PKGS[@]}종)"
+
+#-----------------------------------------------------------
+# 의존성 폐쇄(closure) 검증 — 대상 서버와 동일한 조건으로 실제 resolve 해 본다.
+#
+# 위의 VERIFY_PKGS 는 최상위 패키지 파일명만 보므로 전이 의존성 누락을 못 잡는다.
+# (importlib-resources 누락 사례가 그렇게 통과했다.)
+# 여기서는 --no-index --find-links 로 진짜 의존성 해석을 돌려 확인한다.
+# --dry-run 은 실제 설치 없이 해석만 하며 pip 22.2+ 에서 지원한다.
+#-----------------------------------------------------------
+if [ -n "${PIP_MM}" ] && [ "$(printf '%s\n22.2\n' "${PIP_MM}" | sort -V | head -1)" = "22.2" ]; then
+    _log "의존성 폐쇄 검증 (--no-index 로 실제 resolve)"
+    RESOLVE_OUT=$("${PY}" -m pip install --no-index --find-links "${DEST}" \
+        -r "${REQ_FILE}" --dry-run --ignore-installed 2>&1)
+    if [ $? -ne 0 ]; then
+        echo "${RESOLVE_OUT}" | tee -a "${LOG_FILE}" >/dev/null
+        echo "${RESOLVE_OUT}" | tail -20
+        _fail "수집본만으로는 설치가 불가능합니다 — 의존성이 빠져 있습니다."
+        _fail "  위 'No matching distribution found for ...' 에 나온 패키지를 확인하세요."
+        _fail "  3.8 전용 조건부 의존성이면 수집 인터프리터가 3.8 이 맞는지 다시 확인하세요."
+        exit 1
+    fi
+    _ok "의존성 폐쇄 검증 완료 — wheels/ 만으로 설치 가능"
+else
+    _log "pip ${PIP_MM} — --dry-run 미지원이라 폐쇄 검증을 건너뜁니다."
+    _log "  대상 서버 반입 전 아래로 직접 확인하세요:"
+    _log "    python3.8 -m pip install --no-index --find-links ${DEST} -r requirements.txt"
+fi
 
 _log ""
 _log "다음 단계:"

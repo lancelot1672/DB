@@ -1,8 +1,0 @@
-PG.env
-*.env
-log/
-__pycache__/
-*.pyc
-.git
-wheels/
-.venv/
