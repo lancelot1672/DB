@@ -69,27 +69,42 @@ _cleanup() { rm -f ${TGT_LST} ${CNT_LST} ${TMP_DIR}/VERIFY_GRANT_ALL_$$.lst ${GE
 # ------------------------------------------------------------
 # _select_menu : Up/Down arrow + Enter selection menu.
 #   args   : menu options
-#   result : selected option in global MENU_RESULT
+#   result : selected option in global MENU_RESULT, index in MENU_INDEX
 #   return : 0 on interactive select, 1 if no TTY (caller falls back)
 #   Reads keys from /dev/tty so sqlplus stdin never interferes.
+#   Lists longer than the terminal scroll inside a window (PgUp/PgDn
+#   jump a page); a "-- cur/total --" status line is shown in that case.
+#   NOTE: keep this in sync with the copy in 01.GRANT_PRIV.sh.
 # ------------------------------------------------------------
 _select_menu() {
     local options=("$@")
     local n=${#options[@]}
-    local cur=0 key k2 first=1
+    local cur=0 key k2 k3 first=1 top=0 rows win drawn i
 
     if [[ ! -t 1 || ! -e /dev/tty ]] ; then
         MENU_RESULT=""
         return 1
     fi
 
+    # visible rows: keep 4 lines for the surrounding prompts
+    rows=$(tput lines 2>/dev/null)
+    [[ -z "${rows}" || "${rows}" -lt 8 ]] && rows=24
+    win=$((rows - 4))
+    [[ ${win} -lt 3 ]] && win=3
+    [[ ${win} -gt ${n} ]] && win=${n}
+    drawn=${win}
+    [[ ${n} -gt ${win} ]] && drawn=$((win + 1))     # + status line
+
     exec 3< /dev/tty
     printf '\033[?25l'                              # hide cursor
     while true ; do
-        [[ $first -eq 0 ]] && printf '\033[%dA' "$n"   # move up to redraw
+        # keep the cursor inside the window
+        [[ ${cur} -lt ${top} ]] && top=${cur}
+        [[ ${cur} -ge $((top + win)) ]] && top=$((cur - win + 1))
+
+        [[ $first -eq 0 ]] && printf '\033[%dA' "${drawn}"   # move up to redraw
         first=0
-        local i
-        for ((i=0; i<n; i++)) ; do
+        for ((i=top; i<top+win; i++)) ; do
             printf '\033[2K'                        # clear line
             if [[ $i -eq $cur ]] ; then
                 printf ' \033[7m> %s \033[0m\n' "${options[$i]}"
@@ -97,6 +112,11 @@ _select_menu() {
                 printf '   %s \n' "${options[$i]}"
             fi
         done
+        if [[ ${n} -gt ${win} ]] ; then
+            printf '\033[2K'
+            printf '   -- %d/%d (PgUp/PgDn) --\n' "$((cur + 1))" "${n}"
+        fi
+
         IFS= read -rsn1 key <&3 || break
         case "$key" in
             $'\033')
@@ -104,6 +124,14 @@ _select_menu() {
                 case "$k2" in
                     '[A') ((cur=(cur-1+n)%n)) ;;    # Up
                     '[B') ((cur=(cur+1)%n)) ;;      # Down
+                    '[5') read -rsn1 -t 0.1 k3 <&3  # PgUp (ESC [ 5 ~)
+                          cur=$((cur - win))
+                          [[ ${cur} -lt 0 ]] && cur=0 ;;
+                    '[6') read -rsn1 -t 0.1 k3 <&3  # PgDn (ESC [ 6 ~)
+                          cur=$((cur + win))
+                          [[ ${cur} -ge ${n} ]] && cur=$((n - 1)) ;;
+                    '[H') cur=0 ;;                  # Home
+                    '[F') cur=$((n - 1)) ;;         # End
                 esac ;;
             '') break ;;                            # Enter
         esac
@@ -322,7 +350,7 @@ _EOF
         fi
 
         # (d) write remediation SQL file
-        FAIL_SQL="${SQL_OUT_DIR}/VERIFY_FAIL_${BSN}_${YMD}_${HMS}.sql"
+        FAIL_SQL="${SQL_OUT_DIR}/V_FAIL_${BSN}_${YMD}_${HMS}.sql"
         {
             echo "-- ============================================================"
             echo "-- VERIFY FAIL remediation : BSN=${BSN}"
