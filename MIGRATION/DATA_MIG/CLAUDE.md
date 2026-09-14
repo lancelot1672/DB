@@ -26,11 +26,13 @@
 - TGT : TOBE 고정
 
 #### DBM_MIG_COL_MAP (컬럼 매핑) — 상세는 COL_MAP_PLAN.md
-- MSTR_ID : DBM_MIG_MSTR.MSTR_ID
-- COL_SEQ : 타겟 컬럼 순서
+- 모든 테이블 공통 테이블 하나 (테이블별 _MAPPING 테이블 만들지 않음), PK : TGT_OWNER + TGT_TABLE_NAME + SRC_OWNER + SRC_TABLE_NAME + TGT_COL
+- TGT_OWNER / TGT_TABLE_NAME / SRC_OWNER / SRC_TABLE_NAME : 소스 → 타겟 테이블 쌍 (N:1 병합 시 소스별 매핑)
 - TGT_COL : 타겟 컬럼명
-- SRC_COL : 소스 컬럼명 (추가 컬럼이면 NULL)
-- DEFAULT_VAL : SRC_COL 이 NULL 일 때 넣을 값
-- REMARK : 비고
-- 구조 변경 테이블만 타겟 컬럼 전부 등록, 삭제 컬럼은 미등록
+- SRC_COL : 소스 컬럼명 (RENAME 일 때 옛 이름, ADD 는 NULL)
+- MAP_FLAG : RENAME (컬럼명 변경) / ADD (추가 컬럼)
+- DEFAULT_VAL : ADD 컬럼에 넣을 값 (NULL 이면 INSERT 에서 제외 → 타겟 DEFAULT)
+- REMARK : 자유 메모
+- TRANS_YN = 'Y' 테이블의 바뀐 컬럼만 등록, 나머지는 타겟 ALL_TAB_COLUMNS 에서 같은 이름으로 자동 매핑
+- 적재 : 03.LOAD_COL_MAP.sh <CSV> (CSV 에 나온 테이블 쌍만 DELETE 후 INSERT, 이름 컬럼 대문자 변환)
 - 제약 : Oracle / Tibero 이기종 가능, 프로시저 사용 금지 (일반 SQL 만)
