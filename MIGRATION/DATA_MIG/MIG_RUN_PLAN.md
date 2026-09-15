@@ -171,7 +171,8 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
    COMMIT;
    ```
 4. `.out` 에는 **힌트를 넣지 않는다** (힌트는 실행 시 적용, 7장).
-5. `.out` 은 이관 / 재수행 직전에 **다시 생성되어 덮어써진다** (6장). 조건 / 매핑 수정은 `DBM_MIG_MSTR` / `DBM_MIG_COL_MAP` 에서 하고, `.out` 을 직접 고친 내용은 유지되지 않는다(내용이 바뀌면 이전 파일은 `.bak`).
+5. `SQL_REFRESH=N`(기본) 이면 `.out` 을 직접 고친 내용이 실행에 그대로 반영된다. WHERE 를 고칠 때는 건수 조회용 `-- CONDITION` 주석도 같이 고친다.
+   `SQL_REFRESH=Y` 이면 `.out` 은 이관 / 재수행 직전에 **다시 생성되어 덮어써진다** (6장). 조건 / 매핑 수정은 `DBM_MIG_MSTR` / `DBM_MIG_COL_MAP` 에서 하고, 직접 고친 내용은 유지되지 않는다(내용이 바뀌면 이전 파일은 `.bak`).
 6. 같은 소스 → 타겟 쌍이 중복 등록되어 파일명이 겹치면 `[WARN]` 표시 후 덮어쓴다.
 7. 이관이 실행 중인 단계의 디렉토리는 다시 작성할 수 없다.
    - 조회는 두 번으로 나눈다 : ① `DBM_MIG_MSTR` 대상 목록 ② `TRANS_YN = 'Y'` 대상이 있을 때만 `ALL_TAB_COLUMNS` + `DBM_MIG_COL_MAP` 컬럼 목록.
@@ -203,7 +204,9 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 4. **INSERT 만** 한다. 타겟 데이터를 TRUNCATE / DELETE 하지 않는다 (같은 단계를 다시 실행하면 중복 적재됨).
 5. 실패한 INSERT 는 ROLLBACK 되므로 재수행해도 중복되지 않는다.
 
-### 이관 직전 SQL 재생성 (이관 / 재수행 공통)
+### 이관 직전 SQL 재생성 (이관 / 재수행 공통, `MIG.env` `SQL_REFRESH=Y` 일 때만)
+- `SQL_REFRESH` : `Y` 켬 / `N` 또는 미설정 끔(기본). worker 시작 시점의 `MIG.env` 값으로 고정되며 메뉴 상단 / [2][3] 미리보기 / 로그 헤더에 `SQL_REFRESH=Y|N` 표시.
+- 끔(N) : `cmd/{PHASE}` 의 `.out` 을 그대로 실행한다. 재수행 시 파일이 없으면 FAIL(`SQL file not found`), SKIP 없음.
 - 대상 목록은 `cmd/{PHASE}` 의 `.out` 파일 목록이다 ([1] / [4] 이후 MSTR 에 추가된 테이블은 SQL 을 다시 작성해야 포함).
 - 테이블마다 실행 직전에 `DBM_MIG_MSTR`(TRANS_YN = 'Y' 면 `DBM_MIG_COL_MAP` 포함)를 다시 조회해 SQL 을 만들고 `cmd/{PHASE}/*.out` 을 **덮어쓴 뒤 그 파일을 실행**한다.
   - 내용이 바뀌었으면 이전 파일은 `*.out.bak` 로 남긴다 (`-- GENERATED` 시각만 다른 경우는 변경 아님).
@@ -230,7 +233,7 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
    INSERT /*+ APPEND PARALLEL(n) */ INTO ...
    SELECT /*+ PARALLEL(n) */ ...
    ```
-2. 줄 첫머리가 `INSERT INTO` / `SELECT` 인 줄에만 넣는다. 이미 `/*+ ... */` 힌트가 있는 SELECT 줄은 그대로 둔다. (단, `.out` 은 이관 직전에 다시 생성되므로 파일에 직접 넣은 힌트는 유지되지 않는다)
+2. 줄 첫머리가 `INSERT INTO` / `SELECT` 인 줄에만 넣는다. 이미 `/*+ ... */` 힌트가 있는 SELECT 줄(직접 수정한 `.out`)은 그대로 둔다. (단, `SQL_REFRESH=Y` 면 `.out` 이 이관 직전에 다시 생성되므로 파일에 직접 넣은 힌트는 유지되지 않는다)
 3. **[h] Hint** 에서 두 값을 변경한다. `MIG_HINT.conf` 에 저장된다.
    - `WORKER_DEGREE` : 동시에 이관할 테이블 수 (1 ~ 99, 기본 1)
    - `PARALLEL_DEGREE` : 테이블마다의 PARALLEL 차수 (기본 4, `1` 이면 `APPEND` 만 넣고 병렬 / PARALLEL DML 은 쓰지 않음)
@@ -242,7 +245,7 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 ## 8. FAIL 재수행 ([R] → [3] / [6])
 
 1. 해당 단계(PRE / DDAY)의 **가장 최근 RUN_ID** 에서 `STATUS = 'FAIL'` 인 테이블만 재수행한다.
-2. `.out` 파일은 로그의 소스 / 타겟 명으로 `{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out` 을 찾는다. 실행 직전에 SQL 을 다시 생성하므로 파일이 없어도 아직 대상이면 새로 만들어 실행하고, 대상이 아니면 SKIP 한다 (6장 "이관 직전 SQL 재생성").
+2. `.out` 파일은 로그의 소스 / 타겟 명으로 `{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out` 을 찾는다. `SQL_REFRESH=N`(기본) 이면 파일이 없을 때 실행하지 않고 FAIL(`SQL file not found`)로 둔다. `SQL_REFRESH=Y` 면 실행 직전에 SQL 을 다시 생성하므로 파일이 없어도 아직 대상이면 새로 만들어 실행하고, 대상이 아니면 SKIP 한다 (6장 "이관 직전 SQL 재생성").
 3. 새 RUN_ID / PENDING 을 만들지 않고 **기존 FAIL 행을 RUNNING → SUCCESS / FAIL 로 갱신**한다 (이전 ERROR_MSG / 시간은 덮어씀).
 4. 실행 방식(백그라운드, 순차, 힌트, 로그)은 이관 실행과 같다.
 

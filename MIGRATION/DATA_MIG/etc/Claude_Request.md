@@ -131,3 +131,11 @@
   - 진행 로그 `SQL file :` 줄, `[Wn] SKIP` 이벤트, Progress / 끝 요약 / 대시보드에 SKIP 건수, SKIP 노랑 표시
   - [2] / [3] 미리보기에 재생성 안내, 재수행의 SQL 파일 없음은 FAIL 대신 재생성
   - `MIG_RUN_PLAN.md` 5 / 6 / 7 / 8장 반영 (`.out` 직접 수정은 유지되지 않음)
+
+### 15. 14번(SQL 재생성)을 MIG.env 옵션으로 켜기 / 끄기
+- 요청 : 14번 요청을 MIG.env 에 옵션으로 켜기/끄기 가능하게 구성
+- 결정 : 옵션 없으면 끔(N) / 끔은 예전 동작 그대로 / MIG.env 에서만 설정, 화면·로그에 표시
+- 응답 : `MIG.env` `SQL_REFRESH=Y|N` (Y 외에는 N)
+  - N : `.out` 그대로 실행, 재수행 시 파일 없으면 FAIL, SKIP 없음 / Y : 14번 동작
+  - worker 시작 시 값으로 고정, 메뉴 상단 / [2][3] 미리보기 / 로그 헤더에 `SQL_REFRESH=` 표시
+  - `MIG.env.example`, `MIG_RUN_PLAN.md` 반영

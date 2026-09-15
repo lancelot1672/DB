@@ -72,7 +72,8 @@
 #                   .out header comments (-- KEY : value) keep the log key and count condition
 #   - run         : new RUN_ID (MAX + 1) per run ; DBM_XDN_LOG.MIG_TYPE = phase (PRE / DDAY)
 #                   PENDING -> RUNNING -> SUCCESS / FAIL, ROW_CNT_SRC / ROW_CNT_TGT, ERROR_MSG
-#   - regenerate  : run and retry rebuild each table's SQL from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs
+#   - regenerate  : MIG.env SQL_REFRESH=Y only (default N : the .out files run as they are, a missing file on retry -> FAIL)
+#                   run and retry rebuild each table's SQL from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs
 #                   and overwrite ./cmd/<phase>/{TGT}__{SRC}.out (a changed file is kept as .bak ; hand edits are lost) ;
 #                   a table that is no longer a target (row gone / MIG_YN = 'N' / MIG_TYPE, MIG_FULL changed) -> SKIP (not run)
 #   - retry       : FAIL rows of MAX(RUN_ID) for MSTR_ID + phase, re-run ./cmd/<phase>/{TGT}__{SRC}.out
@@ -112,6 +113,8 @@ if [[ -z "${MSTR_ID}" || -z "${SRC_DBLINK}" ]] ; then
 fi
 
 [[ "${HEARTBEAT_SEC}" =~ ^[1-9][0-9]*$ ]] || HEARTBEAT_SEC=300
+# SQL_REFRESH=Y : run / retry regenerate each table's SQL right before it runs ; anything else (default) : run the .out as it is
+case "${SQL_REFRESH}" in Y|y) SQL_REFRESH="Y" ;; *) SQL_REFRESH="N" ;; esac
 
 DB_CONN="${DB_USER}/${DB_PASS}${DB_TNS:+@${DB_TNS}}"
 
@@ -1026,7 +1029,11 @@ EOF
     _out "  RUN_ID    : %s\n" "${RUN_ID}"
     _out "  SQL files : %s\n" "${TOTAL}"
     _out "  Worker    : %s table(s) at once, order TAB_SIZE small first\n" "${WORKER_DEGREE}"
-    _out "  SQL       : regenerated from %s right before each table (cmd/%s/*.out overwritten, changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}" "${PHASE}"
+    if [[ "${SQL_REFRESH}" == "Y" ]] ; then
+        _out "  SQL       : SQL_REFRESH=Y : regenerated from %s right before each table (cmd/%s/*.out overwritten, changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}" "${PHASE}"
+    else
+        _out "  SQL       : SQL_REFRESH=N : cmd/%s/*.out run as they are (MIG.env SQL_REFRESH=Y : regenerate before each table)\n" "${PHASE}"
+    fi
     _out "  Hint      : %s\n\n" "$(_hint_text)"
     _head_tail ${TMP_LIST} _fmt_file
 
@@ -1044,7 +1051,7 @@ _fmt_fail() {
     local _t _so _st _to _tt _err _f
     while IFS='|' read -r _t _so _st _to _tt _err ; do
         _f="${CMD_DIR}/${PHASE}/$(_out_name "${_to}" "${_tt}" "${_so}" "${_st}")"
-        _out "  %s.%s -> %s.%s : %s %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "$(basename "${_f}")" "$([[ -f "${_f}" ]] || echo "[SQL file missing : regenerated before run]")"
+        _out "  %s.%s -> %s.%s : %s %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "$(basename "${_f}")" "$([[ -f "${_f}" ]] || { [[ "${SQL_REFRESH}" == "Y" ]] && echo "[SQL file missing : regenerated before run]" || echo "[SQL file missing]" ; })"
         _out "      last error : %s\n" "${_err}"
     done
 }
@@ -1105,8 +1112,13 @@ EOF
 
     _out "  RUN_ID            : %s (latest %s run)\n" "${RUN_ID}" "${PHASE}"
     _out "  FAIL tables       : %s\n" "${TOTAL}"
-    _out "  SQL file missing  : %s (regenerated before run while still a target)\n" "${MISS_CNT}"
-    _out "  SQL               : regenerated from %s right before each table (changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}"
+    if [[ "${SQL_REFRESH}" == "Y" ]] ; then
+        _out "  SQL file missing  : %s (regenerated before run while still a target)\n" "${MISS_CNT}"
+        _out "  SQL               : SQL_REFRESH=Y : regenerated from %s right before each table (changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}"
+    else
+        _out "  SQL file missing  : %s (will stay FAIL)\n" "${MISS_CNT}"
+        _out "  SQL               : SQL_REFRESH=N : .out files run as they are (MIG.env SQL_REFRESH=Y : regenerate before each table)\n"
+    fi
     _out "  Worker            : %s table(s) at once, order TAB_SIZE small first\n" "${WORKER_DEGREE}"
     _out "  Hint              : %s\n\n" "$(_hint_text)"
     _head_tail ${TMP_LIST} _fmt_fail
@@ -1548,8 +1560,9 @@ _slot_run() {
     printf "%s|%s|%s|%s|%s\n" "${NUM}" "${TOTAL}" "${SO}.${ST} -> ${TO}.${TT}" "$(date +%s)" "${PARALLEL_DEGREE}" > "${SLOT_PREFIX}${SLOT}"
     _event "${SLOT}" "$(printf "START    [%*d/%s] %s.%s -> %s.%s  (PARALLEL %s)" "${#TOTAL}" "${NUM}" "${TOTAL}" "${SO}" "${ST}" "${TO}" "${TT}" "${PARALLEL_DEGREE}")"
 
-    # SQL of this table regenerated from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs (cmd/<PHASE>/*.out overwritten)
-    _refresh_out "${F}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}"
+    # SQL_REFRESH=Y : SQL of this table regenerated from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs (cmd/<PHASE>/*.out overwritten)
+    REFRESH_STATUS="" ; REFRESH_NOTE=""
+    [[ "${SQL_REFRESH}" == "Y" ]] && _refresh_out "${F}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}"
     case "${REFRESH_STATUS}" in
         SKIP)
             EXEC_STATUS="SKIP" ; EXEC_ERR="${REFRESH_NOTE}" ; EXEC_ELAPSED="00:00:00"
@@ -1652,7 +1665,7 @@ _run_header() {
     if [[ -n "${TOTAL_ON}" ]] ; then _total "\n" ; fi
     _out "%s\n" "$SEP"
     _out " [%s] %s  MSTR_ID=%s  RUN_ID=%s  TABLES=%s  PID=%s\n" "$1" "$2" "${MSTR_ID}" "$3" "$4" "$$"
-    _out "       START=%s  DB=%s  DBLINK=%s  HEARTBEAT=%ss\n" "${RUN_START_STR}" "${DB_TYPE}" "${SRC_DBLINK}" "${HEARTBEAT_SEC}"
+    _out "       START=%s  DB=%s  DBLINK=%s  HEARTBEAT=%ss  SQL_REFRESH=%s\n" "${RUN_START_STR}" "${DB_TYPE}" "${SRC_DBLINK}" "${HEARTBEAT_SEC}" "${SQL_REFRESH}"
     _out "       WORKER=%s  HINT=%s   (changeable while running : [h] Hint)\n" "${WORKER_DEGREE}" "$(_hint_text)"
     _out "       LOG=%s\n" "${LOGFILE}"
     _out "       DETAIL=%s\n" "${DETAIL_LOG}"
@@ -1977,7 +1990,7 @@ while true ; do
     _clear
     {
         printf "%s\n" "$SEP"
-        printf " DATA MIGRATION   MSTR_ID=%s  DB_TYPE=%s  SRC_DBLINK=%s\n" "${MSTR_ID}" "${DB_TYPE}" "${SRC_DBLINK}"
+        printf " DATA MIGRATION   MSTR_ID=%s  DB_TYPE=%s  SRC_DBLINK=%s  SQL_REFRESH=%s\n" "${MSTR_ID}" "${DB_TYPE}" "${SRC_DBLINK}" "${SQL_REFRESH}"
         printf "%s\n" "$DASH"
         _menu_status_line
         [[ -n "${OBJ_WARN}" ]] && printf " ! CHECK   : %s  (checked at menu start)\n" "${OBJ_WARN}"
