@@ -7,9 +7,9 @@
 #   - header names = INSERT column list (column order is free)
 #   - "..." quoted values may contain commas, "" = literal double quote
 #   - every value is inserted as a quoted literal, empty value -> NULL
-#   - TGT_OWNER / TGT_TABLE_NAME / SRC_OWNER / SRC_TABLE_NAME / TGT_COL / SRC_COL / MAP_FLAG -> upper case
+#   - SRC_OWNER / SRC_TABLE_NAME / TGT_OWNER / TGT_TABLE_NAME / TGT_COL / SRC_COL / MAP_FLAG -> upper case
 #     (DEFAULT_VAL / REMARK as-is)
-#   - table pairs (TGT_OWNER, TGT_TABLE_NAME, SRC_OWNER, SRC_TABLE_NAME) found in the CSV are replaced :
+#   - table pairs (SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME) found in the CSV are replaced :
 #     existing mapping rows of those pairs are deleted, then the CSV rows are inserted (one transaction)
 #     mapping rows of other table pairs are kept
 #   - DB client by DB_TYPE in MIG.env (ORACLE=sqlplus, TIBERO=tbsql)
@@ -53,7 +53,7 @@ DB_CONN="${DB_USER}/${DB_PASS}${DB_TNS:+@${DB_TNS}}"
 
 TARGET_TAB="DBADM.DBM_MIG_COL_MAP"
 # name columns converted to upper case (dictionary names are upper case)
-UPPER_COLS="TGT_OWNER TGT_TABLE_NAME SRC_OWNER SRC_TABLE_NAME TGT_COL SRC_COL MAP_FLAG"
+UPPER_COLS="SRC_OWNER SRC_TABLE_NAME TGT_OWNER TGT_TABLE_NAME TGT_COL SRC_COL MAP_FLAG"
 
 SEP="============================================================"
 
@@ -101,9 +101,9 @@ _run_sql() {
     return 0
 }
 
-# _pair_where <TGT_OWNER> <TGT_TABLE> <SRC_OWNER> <SRC_TABLE>
+# _pair_where <SRC_OWNER> <SRC_TABLE> <TGT_OWNER> <TGT_TABLE>
 _pair_where() {
-    printf "TGT_OWNER = '%s' AND TGT_TABLE_NAME = '%s' AND SRC_OWNER = '%s' AND SRC_TABLE_NAME = '%s'" \
+    printf "SRC_OWNER = '%s' AND SRC_TABLE_NAME = '%s' AND TGT_OWNER = '%s' AND TGT_TABLE_NAME = '%s'" \
            "$(_q "$1")" "$(_q "$2")" "$(_q "$3")" "$(_q "$4")"
 }
 
@@ -172,16 +172,16 @@ NR == 1 {
     }
     printf "INSERT INTO %s (%s) VALUES (%s);\n", tab, col_list, vals > bodyfile
 
-    key = disp["TGT_OWNER"] "|" disp["TGT_TABLE_NAME"] "|" disp["SRC_OWNER"] "|" disp["SRC_TABLE_NAME"]
+    key = disp["SRC_OWNER"] "|" disp["SRC_TABLE_NAME"] "|" disp["TGT_OWNER"] "|" disp["TGT_TABLE_NAME"]
     if (!(key in pair_cnt)) pair_order[++npair] = key
     pair_cnt[key]++
 
-    printf "LINE %-5d %s.%s <- %s.%s  %s <- %s [%s] %s\n", NR,
-           disp["TGT_OWNER"], disp["TGT_TABLE_NAME"], disp["SRC_OWNER"], disp["SRC_TABLE_NAME"],
-           disp["TGT_COL"], (disp["SRC_COL"] == "" ? "-" : disp["SRC_COL"]), disp["MAP_FLAG"], disp["DEFAULT_VAL"] > prevfile
+    printf "LINE %-5d %s.%s -> %s.%s  %s -> %s [%s] %s\n", NR,
+           disp["SRC_OWNER"], disp["SRC_TABLE_NAME"], disp["TGT_OWNER"], disp["TGT_TABLE_NAME"],
+           (disp["SRC_COL"] == "" ? "-" : disp["SRC_COL"]), disp["TGT_COL"], disp["MAP_FLAG"], disp["DEFAULT_VAL"] > prevfile
 }
 
-# TGT_OWNER|TGT_TABLE_NAME|SRC_OWNER|SRC_TABLE_NAME|CSV rows  (CSV order)
+# SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|CSV rows  (CSV order)
 END { for (i = 1; i <= npair; i++) print pair_order[i] "|" pair_cnt[pair_order[i]] > pairfile }
 EOF
 )
@@ -210,8 +210,8 @@ _ok "SQL built : ${TOTAL} row(s), ${PAIR_CNT} table pair(s)"
     echo "SET LINESIZE 32767"
     echo "SET DEFINE OFF"
     echo "WHENEVER SQLERROR EXIT FAILURE"
-    while IFS='|' read -r TO TT SO ST _n ; do
-        echo "SELECT 'DEL|' || COUNT(*) FROM ${TARGET_TAB} WHERE $(_pair_where "${TO}" "${TT}" "${SO}" "${ST}");"
+    while IFS='|' read -r SO ST TO TT _n ; do
+        echo "SELECT 'DEL|' || COUNT(*) FROM ${TARGET_TAB} WHERE $(_pair_where "${SO}" "${ST}" "${TO}" "${TT}");"
     done < ${TMP_PAIRS}
     echo "EXIT;"
 } > ${TMP_SQL}
@@ -241,9 +241,9 @@ _out "  Rows to DELETE  : %s (existing mapping of these pairs)\n" "${DEL_TOTAL}"
 _out "  Rows to INSERT  : %s\n\n" "${TOTAL}"
 
 _fmt_pair() {
-    local _to _tt _so _st _n _d
-    while IFS='|' read -r _to _tt _so _st _n _d ; do
-        _out "  %s.%s <- %s.%s   insert %s / delete %s\n" "${_to}" "${_tt}" "${_so}" "${_st}" "${_n}" "${_d:-?}"
+    local _so _st _to _tt _n _d
+    while IFS='|' read -r _so _st _to _tt _n _d ; do
+        _out "  %s.%s -> %s.%s   insert %s / delete %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "${_n}" "${_d:-?}"
     done
 }
 _fmt_line() { while IFS= read -r _line ; do _out "  %s\n" "${_line}" ; done; }
@@ -281,8 +281,8 @@ _out "%s\n" "$SEP"
     echo "SET DEFINE OFF"
     echo "SET FEEDBACK ON"
     echo "WHENEVER SQLERROR EXIT FAILURE ROLLBACK"
-    while IFS='|' read -r TO TT SO ST _n _d ; do
-        echo "DELETE FROM ${TARGET_TAB} WHERE $(_pair_where "${TO}" "${TT}" "${SO}" "${ST}");"
+    while IFS='|' read -r SO ST TO TT _n _d ; do
+        echo "DELETE FROM ${TARGET_TAB} WHERE $(_pair_where "${SO}" "${ST}" "${TO}" "${TT}");"
     done < ${TMP_PAIRS}
     cat ${TMP_BODY}
     echo "COMMIT;"

@@ -7,22 +7,25 @@
 
 | 컬럼 | 설명 |
 |---|---|
-| TGT_OWNER | 타겟 OWNER (PK) |
-| TGT_TABLE_NAME | 타겟 테이블명 (PK) |
 | SRC_OWNER | 소스 OWNER (PK) |
 | SRC_TABLE_NAME | 소스 테이블명 (PK) |
+| TGT_OWNER | 타겟 OWNER (PK) |
+| TGT_TABLE_NAME | 타겟 테이블명 (PK) |
 | TGT_COL | 타겟 컬럼명 (PK) |
 | SRC_COL | 소스 컬럼명 (`RENAME` 일 때 옛 이름, `ADD` 는 NULL) |
 | MAP_FLAG | `RENAME` : 컬럼명 변경 / `ADD` : 추가 컬럼 |
 | DEFAULT_VAL | `ADD` 컬럼에 넣을 값 (`'N'`, `SYSDATE` 등). 비우면 INSERT 에서 빠지고 타겟 DEFAULT 적용 |
 | REMARK | 자유 메모 (변경 사유 등) |
 
-DDL : `DDL_Script/DBM_MIG_COL_MAP.sql`
+DDL : `DDL_Script/DBM_MIG_COL_MAP.sql` (PK : SRC_OWNER + SRC_TABLE_NAME + TGT_OWNER + TGT_TABLE_NAME + TGT_COL)
+
+이미 TGT 컬럼이 앞에 오는 순서로 만든 테이블은 ALTER 로 컬럼 순서를 바꿀 수 없으므로 DDL 파일 주석의 절차(RENAME → 새로 CREATE → INSERT SELECT → DROP)로 다시 만든다.
 
 ## 적재 : `03.LOAD_COL_MAP.sh <CSV_FILE>`
 - CSV 형식 / 동작은 `01.LOAD_MIG_MSTR.sh` 와 같다 (헤더 = 컬럼, `"..."` 따옴표, 쉘 검증 없음, 미리보기 + y/N, 오류 시 전체 ROLLBACK)
-- CSV 에 나온 **테이블 쌍(TGT_OWNER, TGT_TABLE_NAME, SRC_OWNER, SRC_TABLE_NAME) 의 기존 매핑을 DELETE 후 CSV 로 INSERT** (한 트랜잭션). 다른 테이블 쌍의 매핑은 유지
-- 이름 컬럼(TGT_OWNER / TGT_TABLE_NAME / SRC_OWNER / SRC_TABLE_NAME / TGT_COL / SRC_COL / MAP_FLAG)은 대문자로 변환, `DEFAULT_VAL` / `REMARK` 는 그대로
+- CSV 에 나온 **테이블 쌍(SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME) 의 기존 매핑을 DELETE 후 CSV 로 INSERT** (한 트랜잭션). 다른 테이블 쌍의 매핑은 유지
+- 이름 컬럼(SRC_OWNER / SRC_TABLE_NAME / TGT_OWNER / TGT_TABLE_NAME / TGT_COL / SRC_COL / MAP_FLAG)은 대문자로 변환, `DEFAULT_VAL` / `REMARK` 는 그대로
+- CSV 헤더 순서는 자유지만 샘플은 테이블과 같은 순서(SRC 가 먼저)로 작성한다
 - 샘플 : `DBM_MIG_COL_MAP_sample.csv` (콤마가 들어가는 식은 `"NVL(REG_DT, SYSDATE)"` 처럼 따옴표로 감싼다)
 - 테이블 쌍의 매핑을 전부 지우려면 CSV 에서 빼는 게 아니라 DB 에서 직접 DELETE 한다 (CSV 에 없는 쌍은 건드리지 않음)
 
@@ -40,10 +43,10 @@ DDL : `DDL_Script/DBM_MIG_COL_MAP.sql`
 
 `OLD.TB_CUST_NOTI` → `NEW.CUST_NOTI` : `SEND_SMS_YN` → `SMS_SEND_YN`, 맨 뒤 `KAKAO_SEND_YN` 추가
 
-| TGT_OWNER | TGT_TABLE_NAME | SRC_OWNER | SRC_TABLE_NAME | TGT_COL | SRC_COL | MAP_FLAG | DEFAULT_VAL |
+| SRC_OWNER | SRC_TABLE_NAME | TGT_OWNER | TGT_TABLE_NAME | TGT_COL | SRC_COL | MAP_FLAG | DEFAULT_VAL |
 |---|---|---|---|---|---|---|---|
-| NEW | CUST_NOTI | OLD | TB_CUST_NOTI | SMS_SEND_YN | SEND_SMS_YN | RENAME | |
-| NEW | CUST_NOTI | OLD | TB_CUST_NOTI | KAKAO_SEND_YN | | ADD | 'N' |
+| OLD | TB_CUST_NOTI | NEW | CUST_NOTI | SMS_SEND_YN | SEND_SMS_YN | RENAME | |
+| OLD | TB_CUST_NOTI | NEW | CUST_NOTI | KAKAO_SEND_YN | | ADD | 'N' |
 
 `cmd/{PRE|DDAY}/NEW_CUST_NOTI__OLD_TB_CUST_NOTI.out` :
 ```sql
@@ -64,12 +67,12 @@ COMMIT;
 
 `OLD.SMS_HIST` + `OLD.KAKAO_HIST` → `NEW.NOTI_HIST` (소스마다 컬럼명이 다르고, 구분 컬럼 `NOTI_TYPE` 추가)
 
-| TGT_TABLE_NAME | SRC_TABLE_NAME | TGT_COL | SRC_COL | MAP_FLAG | DEFAULT_VAL |
+| SRC_TABLE_NAME | TGT_TABLE_NAME | TGT_COL | SRC_COL | MAP_FLAG | DEFAULT_VAL |
 |---|---|---|---|---|---|
-| NOTI_HIST | SMS_HIST | SEND_DT | SMS_SEND_DT | RENAME | |
-| NOTI_HIST | SMS_HIST | NOTI_TYPE | | ADD | 'SMS' |
-| NOTI_HIST | KAKAO_HIST | SEND_DT | KKO_SEND_DT | RENAME | |
-| NOTI_HIST | KAKAO_HIST | NOTI_TYPE | | ADD | 'KAKAO' |
+| SMS_HIST | NOTI_HIST | SEND_DT | SMS_SEND_DT | RENAME | |
+| SMS_HIST | NOTI_HIST | NOTI_TYPE | | ADD | 'SMS' |
+| KAKAO_HIST | NOTI_HIST | SEND_DT | KKO_SEND_DT | RENAME | |
+| KAKAO_HIST | NOTI_HIST | NOTI_TYPE | | ADD | 'KAKAO' |
 
 → `NEW_NOTI_HIST__OLD_SMS_HIST.out`, `NEW_NOTI_HIST__OLD_KAKAO_HIST.out` 두 파일로 따로 적재.
 
