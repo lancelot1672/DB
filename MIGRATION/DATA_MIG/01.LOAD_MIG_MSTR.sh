@@ -55,9 +55,11 @@ DEF_VALS="TRANS_YN=N PARTITION_YN=N MIG_YN=Y MIG_METHOD=DB_LINK SRC=ASIS TGT=TOB
 
 SEP="============================================================"
 
-mkdir -p "${BASE_PATH}/log" "${BASE_PATH}/tmp"
+# MIG_HOME (MIG.env, default = script directory) : ${MIG_HOME}/log (load log) , ${MIG_HOME}/tmp (temp SQL)
+MIG_HOME="${MIG_HOME:-${SCRIPT_DIR}}"
+mkdir -p "${MIG_HOME}/log" "${MIG_HOME}/tmp"
 
-TMP_PREFIX="${BASE_PATH}/tmp/LOAD_MIG_MSTR"
+TMP_PREFIX="${MIG_HOME}/tmp/LOAD_MIG_MSTR"
 TMP_CSV="${TMP_PREFIX}_CSV_$$.csv"
 TMP_BODY="${TMP_PREFIX}_BODY_$$.sql"
 TMP_INSERT_SQL="${TMP_PREFIX}_INSERT_$$.sql"
@@ -65,7 +67,7 @@ TMP_PREVIEW="${TMP_PREFIX}_PREVIEW_$$.txt"
 TMP_OUT="${TMP_PREFIX}_OUT_$$.txt"
 
 # --- Log File ---
-LOGFILE="${BASE_PATH}/log/LOAD_MIG_MSTR_$(date '+%Y%m%d_%H%M%S').log"
+LOGFILE="${MIG_HOME}/log/LOAD_MIG_MSTR_$(date '+%Y%m%d_%H%M%S').log"
 
 # _out: Print to terminal and append to log file
 _out() {

@@ -19,9 +19,10 @@
 - MIG_TYPE : 초기적재  / 조건이관 / 전체이관 [INIT / PRE / DDAY]
 - MIG_FULL : 전체 이관 여부 [FULL : 전체 / COND : 조건]
 - COL_CONDITION : 이관 조건 컬럼 명
-- PRE1 : 조건이 있을 경우 조건에 대해 이상 값 (COL_CONDITION >= PRE1)
-- PRE2 : 조건 미만 값 (COL_CONDITION >= PRE1 AND COL_CONDITION < PRE2)
-- PRE3 : 조건 이상 값 (COL_CONDITION >= PRE3)
+- PRE1 : 1차 이관 시작 값 (1차 : COL_CONDITION >= PRE1 AND < PRE2)
+- PRE2 : 1차 끝 / 2차 시작 값 (2차 : COL_CONDITION >= PRE2 AND < PRE3)
+- PRE3 : 2차 끝 / DDAY 시작 값 (DDAY : COL_CONDITION >= PRE3)
+- 조건 컬럼(COL_CONDITION)이 있으면 1차 / 2차 / DDAY 세 단계로 이관하고, 없으면 DDAY 에서 전체 이관한다
 - MIG_METHOD : DB_LINK 고정
 - SRC : ASIS 고정
 - TGT : TOBE 고정

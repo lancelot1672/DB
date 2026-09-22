@@ -9,18 +9,19 @@
 #               after an action the result stays until any key is pressed
 #               (y/N confirm, [h] degree and q in [l] Total Log still need Enter)
 #
-#   [R] Run
-#   [PRE]
-#   [1] Generate PRE SQL  -> ./cmd/PRE/{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out
-#        MIG_TYPE = PRE  AND MIG_FULL = COND : COL_CONDITION >= 'PRE1' AND COL_CONDITION < 'PRE2'
-#   [2] Run PRE           : every .out file in ./cmd/PRE                   (background)
-#   [3] Retry PRE FAILED  : FAIL tables of the latest PRE RUN_ID            (background)
+#   [R] Run     phases : PRE 1st (PRE1 ~ PRE2) , PRE 2nd (PRE2 ~ PRE3) , DDAY (PRE3 ~) ;
+#               a row with a condition column runs in all three, a row without one only in DDAY (whole table)
+#   [PRE]  the step (1st / 2nd) is asked after the key -> ./cmd/PRE1 , ./cmd/PRE2
+#   [1] Generate PRE SQL  -> ./cmd/PRE{1|2}/{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out
+#        1st : {col} >= 'PRE1' AND {col} < 'PRE2'      2nd : {col} >= 'PRE2' AND {col} < 'PRE3'
+#   [2] Run PRE           : every .out file in ./cmd/PRE1 or ./cmd/PRE2     (background)
+#   [3] Retry PRE FAILED  : FAIL tables of the latest RUN_ID of that step   (background)
 #   [DDAY]
 #   [4] Generate DDAY SQL -> ./cmd/DDAY/{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out
-#        MIG_TYPE = PRE  AND MIG_FULL = COND : COL_CONDITION >= 'PRE3' (rest of the data)
-#        MIG_TYPE = DDAY AND MIG_FULL = FULL : no condition (full)
+#        condition column : {col} >= 'PRE3' (rest of the data)   /   no condition column : no condition (full)
 #   [5] Run DDAY          : every .out file in ./cmd/DDAY                   (background)
 #   [6] Retry DDAY FAILED : FAIL tables of the latest DDAY RUN_ID           (background)
+#   DBM_XDN_LOG.MIG_TYPE keeps the phase : PRE1 / PRE2 / DDAY
 #   [b] Back to the main menu
 #
 #   [l] Total Log         : tail -F of the running (or last) progress log, q + Enter returns
@@ -46,8 +47,10 @@
 #
 #   - launch      : the menu writes a launcher $MIG_HOME/run/{RUN|RETRY}_{PHASE}_{MSTR_ID}_R{RUN_ID}_{ts}.sh
 #                   and starts it as "nohup bash <launcher>" (no execute permission needed on any sh) ;
-#                   the launcher execs "bash 02.RUN_MIG.sh --worker ..." and is removed when the worker ends
-#                   (MIG_HOME : MIG.env, default = script directory)
+#                   the launcher execs "bash 02.RUN_MIG.sh --worker ..." in a NEW SESSION (setsid, or setsid() of
+#                   perl / python) and is removed when the worker ends ; without a new session a terminal Ctrl+C
+#                   would reach sqlplus / tbsql of the worker and cancel the running INSERT (ORA-01013)
+#                   (MIG_HOME : MIG.env, default = script directory ; cmd / log / tmp / run live under it)
 #   - run / retry : preview + confirm in the menu, then a background worker (nohup) does the work ;
 #                   it keeps running after the menu quits or the session disconnects
 #                   only one worker at a time : running state = live worker process (ps) + ./log/.run.lock ;
@@ -63,6 +66,9 @@
 #                   the table block (condition, counts, times, result, progress) is appended when the table ends
 #                   menu actions (preview / cancel / [S] / [h]) are not written to the integrated log
 #   - target rows : MSTR_ID (MIG.env) AND MIG_YN = 'Y' ; other MIG_TYPE / MIG_FULL combinations excluded
+#   - condition   : MIG.env PRE_COND_COL / DDAY_COND_COL = DBM_MIG_MSTR column that holds the condition column name
+#                   of the phase (default COL_CONDITION for both, so a phase can use another column of the row) ;
+#                   the operators are fixed ( >= lower , < upper ) so that the three steps join without gap / overlap
 #   - TRANS_YN    : N -> INSERT INTO TGT SELECT * FROM SRC
 #                   Y -> column list in target ALL_TAB_COLUMNS order ; same name unless DBM_MIG_COL_MAP says
 #                        RENAME : SELECT SRC_COL        ADD : SELECT DEFAULT_VAL (NULL -> column left out)
@@ -76,6 +82,11 @@
 #                   run and retry rebuild each table's SQL from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs
 #                   and overwrite ./cmd/<phase>/{TGT}__{SRC}.out (a changed file is kept as .bak ; hand edits are lost) ;
 #                   a table that is no longer a target (row gone / MIG_YN = 'N' / MIG_TYPE, MIG_FULL changed) -> SKIP (not run)
+#   - split       : MIG.env SPLIT_UNIT=DAY|MONTH|YEAR (+ SPLIT_SIZE) only (default NONE : one .out per table)
+#                   Generate cuts a date condition (VARCHAR or DATE column, format taken from the PRE value) into chunk files
+#                   {TGT}__{SRC}__C0001.out ... : PRE [PRE1, PRE2) , DDAY [PRE3, today] + open last chunk ;
+#                   one DBM_XDN_LOG row per chunk (CHUNK_NO / CHUNK_COND), a failed chunk is retried alone ;
+#                   chunks run as INSERT /*+ NOAPPEND */ without PARALLEL DML so that chunks of one table run at once
 #   - retry       : FAIL rows of MAX(RUN_ID) for MSTR_ID + phase, re-run ./cmd/<phase>/{TGT}__{SRC}.out
 #                   the same DBM_XDN_LOG rows are updated (no new RUN_ID)
 #   - parallel    : up to WORKER_DEGREE tables at once (one sub shell + DB sessions each), order TAB_SIZE small first ;
@@ -115,6 +126,27 @@ fi
 [[ "${HEARTBEAT_SEC}" =~ ^[1-9][0-9]*$ ]] || HEARTBEAT_SEC=300
 # SQL_REFRESH=Y : run / retry regenerate each table's SQL right before it runs ; anything else (default) : run the .out as it is
 case "${SQL_REFRESH}" in Y|y) SQL_REFRESH="Y" ;; *) SQL_REFRESH="N" ;; esac
+# SPLIT_UNIT=DAY|MONTH|YEAR (+ SPLIT_SIZE=n) : Generate splits a date condition into chunk .out files
+#   default MONTH (a table with a condition column is migrated one month at a time) ; NONE = one .out per table
+SPLIT_UNIT=$(printf "%s" "${SPLIT_UNIT:-MONTH}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+case "${SPLIT_UNIT}" in DAY|MONTH|YEAR|NONE) ;; *) SPLIT_UNIT="MONTH" ;; esac
+[[ "${SPLIT_SIZE}" =~ ^[1-9][0-9]*$ ]] || SPLIT_SIZE=1
+SPLIT_TEXT="NONE" ; [[ "${SPLIT_UNIT}" != "NONE" ]] && SPLIT_TEXT="${SPLIT_UNIT} x ${SPLIT_SIZE}"
+
+# PRE_COND_COL (PRE 1st / 2nd) / DDAY_COND_COL (DDAY) : which DBM_MIG_MSTR column holds the condition column name
+#   (default COL_CONDITION for both ; the value of that column is used per table, so tables may use different columns)
+# the comparison operators are fixed ( >= lower , < upper ) : the three steps are joined at PRE2 and PRE3,
+# so another combination would migrate the boundary value twice or leave it out
+#     1st  : {col} >= 'PRE1' AND {col} < 'PRE2'
+#     2nd  : {col} >= 'PRE2' AND {col} < 'PRE3'
+#     DDAY : {col} >= 'PRE3'          (no condition column -> whole table)
+_env_ident() { [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_#$]*$ ]]; }
+PRE_COND_COL=$(printf "%s" "${PRE_COND_COL:-COL_CONDITION}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+DDAY_COND_COL=$(printf "%s" "${DDAY_COND_COL:-COL_CONDITION}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+_env_ident "${PRE_COND_COL}"  || PRE_COND_COL="COL_CONDITION"
+_env_ident "${DDAY_COND_COL}" || DDAY_COND_COL="COL_CONDITION"
+COND_LOW_OP=">=" ; COND_UP_OP="<"
+COND_TEXT="1st : ${PRE_COND_COL} >= PRE1 < PRE2   2nd : ${PRE_COND_COL} >= PRE2 < PRE3   DDAY : ${DDAY_COND_COL} >= PRE3"
 
 DB_CONN="${DB_USER}/${DB_PASS}${DB_TNS:+@${DB_TNS}}"
 
@@ -132,13 +164,16 @@ NL=$'\n'
 SEP="============================================================"
 DASH="------------------------------------------------------------"
 
-CMD_DIR="${SCRIPT_DIR}/cmd"
-LOG_DIR="${SCRIPT_DIR}/log"
-TMP_DIR="${BASE_PATH}/tmp"
-MIG_HOME="${MIG_HOME:-${SCRIPT_DIR}}"     # MIG.env (optional) ; default = script directory
-RUN_DIR="${MIG_HOME}/run"                 # generated launcher sh of background workers
+# MIG_HOME (MIG.env, default = script directory) : the one working path of every script
+#   ${MIG_HOME}/cmd  migration SQL      ${MIG_HOME}/log  logs and run state
+#   ${MIG_HOME}/tmp  temp SQL / output  ${MIG_HOME}/run  launcher sh of background workers
+MIG_HOME="${MIG_HOME:-${SCRIPT_DIR}}"
+CMD_DIR="${MIG_HOME}/cmd"
+LOG_DIR="${MIG_HOME}/log"
+TMP_DIR="${MIG_HOME}/tmp"
+RUN_DIR="${MIG_HOME}/run"
 BASH_BIN="${BASH:-$(command -v bash)}"    # interpreter of the launcher (no execute permission needed)
-mkdir -p "${CMD_DIR}/PRE" "${CMD_DIR}/DDAY" "${LOG_DIR}" "${TMP_DIR}" "${RUN_DIR}"
+mkdir -p "${CMD_DIR}/PRE1" "${CMD_DIR}/PRE2" "${CMD_DIR}/DDAY" "${LOG_DIR}" "${TMP_DIR}" "${RUN_DIR}"
 
 LOCK_FILE="${LOG_DIR}/.run.lock"      # PID|ACTION|PHASE|RUN_ID|LOG|START
 STATE_FILE="${LOG_DIR}/.run.state"    # DONE|TOTAL|SUCCESS|FAIL|RUNNING|WAITING|SKIP (written by the worker every second)
@@ -155,6 +190,7 @@ TMP_RUN="${TMP_DIR}/RUN_MIG_RUN_$$.lst"
 TMP_COLS="${TMP_DIR}/RUN_MIG_COLS_$$.lst"
 TMP_TCOL="${TMP_DIR}/RUN_MIG_TCOL_$$.lst"
 TMP_GENBUF="${TMP_DIR}/RUN_MIG_GENBUF_$$.log"
+TMP_UNIT="${TMP_DIR}/RUN_MIG_UNIT_$$.lst"      # [R] 1 / 4 : work units (table or chunk) of _split_units
 TMP_TAILPID="${TMP_DIR}/RUN_MIG_TAIL_$$.pid"    # [l] Total Log : PID of the background tail
 
 LOGFILE="/dev/null"     # progress log (menu actions : per action, worker : argument)
@@ -162,6 +198,10 @@ DETAIL_LOG=""           # worker only
 TAIL_PID="" ; HB_PID=""
 TOTAL_ON=""             # Y : _out / _file_out also append to TOTAL_DEST
 TOTAL_DEST="${TOTAL_LOG}"   # integrated log (GEN writes to a buffer first, see _generate)
+# chunk header values for _write_out (empty = whole table)
+W_CHUNK_NO="" ; W_CHUNK_TXT="" ; W_CHUNK_FROM="" ; W_CHUNK_TO="" ; W_CHUNK_BASE=""
+# DBM_XDN_LOG.CHUNK_NO / CHUNK_COND available ? (_log_chunk_check) : SQL pieces used by retry / status / unlock
+LOG_CHUNK="N" ; LOG_CHUNK_SQL="NULL" ; LOG_CHUNK_ORDER="" ; LOG_CHUNK_LBL="NULL"
 
 # colour on the terminal only ; log files stay plain (less / vi / grep)
 #   MIG_COLOR=Y : force on (e.g. | less -R) , MIG_COLOR=N or NO_COLOR : off , default : on when stdout is a terminal
@@ -228,7 +268,7 @@ _fail() { _out "[FAIL] %s\n" "$*"; }
 _cleanup() {
     [[ -n "${TAIL_PID}" ]] && kill ${TAIL_PID} 2>/dev/null
     [[ -n "${HB_PID}" ]] && kill ${HB_PID} 2>/dev/null
-    rm -f ${TMP_SQL} ${TMP_OUT} ${TMP_LIST} ${TMP_RUN} ${TMP_COLS} ${TMP_TCOL} ${TMP_GENBUF} ${TMP_TAILPID}
+    rm -f ${TMP_SQL} ${TMP_OUT} ${TMP_LIST} ${TMP_RUN} ${TMP_COLS} ${TMP_TCOL} ${TMP_GENBUF} ${TMP_TAILPID} ${TMP_UNIT}
 }
 trap _cleanup EXIT
 trap 'exit 130' INT
@@ -307,7 +347,9 @@ _get() { grep "^$1|" ${TMP_OUT} | head -1 | cut -d'|' -f2 | tr -d '[:space:]'; }
 # _hdr <KEY> <OUT_FILE> : value of the "-- KEY : value" header comment
 _hdr() { sed -n "s/^-- $1 *: *//p" "$2" | head -1 | sed 's/[[:space:]]*$//'; }
 
-# _out_headers : stdin = .out file paths -> "TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME"
+# _out_headers : stdin = .out file paths
+#   -> "TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|CHUNK_NO|CONDITION"
+#   CHUNK_NO empty = whole table ; CONDITION is the last field (may contain |)
 #   one awk reads every header (one sed per value per file is too slow with hundreds of tables)
 _out_headers() {
     awk '
@@ -323,15 +365,17 @@ _out_headers() {
         }
         close(f)
         sz = (v["TAB_SIZE"] ~ /^[0-9.]+$/) ? v["TAB_SIZE"] : "0"
-        print sz "|" f "|" v["MSTR_ID"] "|" v["SRC_OWNER"] "|" v["SRC_TABLE_NAME"] "|" v["TGT_OWNER"] "|" v["TGT_TABLE_NAME"]
+        cn = (v["CHUNK_NO"] ~ /^[0-9]+$/) ? v["CHUNK_NO"] + 0 : ""
+        print sz "|" f "|" v["MSTR_ID"] "|" v["SRC_OWNER"] "|" v["SRC_TABLE_NAME"] "|" v["TGT_OWNER"] "|" v["TGT_TABLE_NAME"] "|" cn "|" v["CONDITION"]
     }'
 }
 
 # _out_cnt <PHASE> : number of .out files in ./cmd/<PHASE>
 _out_cnt() { find "${CMD_DIR}/$1" -maxdepth 1 -name '*.out' 2>/dev/null | wc -l | tr -d ' '; }
 
-# _out_name <TGT_OWNER> <TGT_TABLE> <SRC_OWNER> <SRC_TABLE> : {TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out
-_out_name() { printf "%s_%s__%s_%s.out" "$1" "$2" "$3" "$4"; }
+# _out_name <TGT_OWNER> <TGT_TABLE> <SRC_OWNER> <SRC_TABLE> [CHUNK_NO]
+#   {TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}.out , chunk : ..._{SRC_TABLE_NAME}__C0001.out
+_out_name() { printf "%s_%s__%s_%s%s.out" "$1" "$2" "$3" "$4" "$([[ -n "$5" ]] && printf "__C%04d" "$(( 10#$5 ))")"; }
 
 # _sql_head : common settings for query / update SQL files
 _sql_head() {
@@ -603,7 +647,7 @@ _busy_phase() {
 
 # _launch <RUN|RETRY> <PHASE> <RUN_ID> : start the background worker
 _launch() {
-    local _action="$1" _phase="$2" _rid="$3" _log _err _run_sh _pid _now _i _p
+    local _action="$1" _phase="$2" _rid="$3" _log _err _run_sh _pid _now _i _p _sess
 
     _log="${LOG_DIR}/${_action}_${_phase}_${MSTR_ID}_R${_rid}_$(date '+%Y%m%d_%H%M%S').log"
     _err="${_log%.log}_worker.err"     # worker startup output / shell errors (removed at the end when empty)
@@ -617,15 +661,36 @@ _launch() {
     fi
     rm -f "${STOP_FILE}" "${STATE_FILE}" "${SLOT_PREFIX}"*
 
+    # the worker must leave this terminal's process group : Ctrl+C sends SIGINT to the whole foreground group,
+    # and sqlplus / tbsql install their own SIGINT handler, so a running INSERT would be cancelled (ORA-01013)
+    #   -> start it in a new session (setsid , or setsid() of perl / python) ; nohup alone only blocks SIGHUP
+    _sess=""
+    if   command -v setsid  > /dev/null 2>&1 ; then _sess="setsid"
+    elif command -v perl    > /dev/null 2>&1 ; then _sess="perl"
+    elif command -v python3 > /dev/null 2>&1 ; then _sess="python3"
+    elif command -v python  > /dev/null 2>&1 ; then _sess="python"
+    fi
+
     # launcher sh : run by the interpreter explicitly, so neither 02.RUN_MIG.sh nor the launcher needs
     # execute permission ; exec keeps the PID and the worker args ("bash 02.RUN_MIG.sh --worker ...")
     {
         echo "#!${BASH_BIN}"
         echo "# generated by $(basename "${SCRIPT_PATH}") : background worker launcher (removed when the worker ends)"
         echo "# MSTR_ID=${MSTR_ID}  ACTION=${_action}  PHASE=${_phase}  RUN_ID=${_rid}  CREATED=${_now}"
+        echo "trap '' INT HUP"      # terminal signals ignored from here on (also inherited by the DB client)
         printf "cd %q || exit 1\n" "${SCRIPT_DIR}"
         printf "export MIG_RUN_SH=%q\n" "${_run_sh}"
-        printf "exec %q %q --worker %q %q %q %q\n" "${BASH_BIN}" "${SCRIPT_PATH}" "${_action}" "${_phase}" "${_rid}" "${_log}"
+        printf "export MIG_SESSION=%q\n" "${_sess:-same process group}"
+        case "${_sess}" in
+            setsid)  printf "exec setsid %q %q --worker %q %q %q %q\n" \
+                            "${BASH_BIN}" "${SCRIPT_PATH}" "${_action}" "${_phase}" "${_rid}" "${_log}" ;;
+            perl)    printf "exec perl -e 'use POSIX; POSIX::setsid(); exec @ARGV or exit 127;' %q %q --worker %q %q %q %q\n" \
+                            "${BASH_BIN}" "${SCRIPT_PATH}" "${_action}" "${_phase}" "${_rid}" "${_log}" ;;
+            python*) printf "exec %s -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' %q %q --worker %q %q %q %q\n" \
+                            "${_sess}" "${BASH_BIN}" "${SCRIPT_PATH}" "${_action}" "${_phase}" "${_rid}" "${_log}" ;;
+            *)       printf "exec %q %q --worker %q %q %q %q\n" \
+                            "${BASH_BIN}" "${SCRIPT_PATH}" "${_action}" "${_phase}" "${_rid}" "${_log}" ;;
+        esac
     } > "${_run_sh}"
     chmod 700 "${_run_sh}" 2>/dev/null
 
@@ -671,6 +736,12 @@ _launch() {
     fi
 
     _say "[OK]   ${_action} ${_phase} started in background (RUN_ID=${_rid}, PID=${_pid})"
+    if [[ -n "${_sess}" ]] ; then
+        echo "       sess : new session (${_sess}) : Ctrl+C in this terminal can not reach the worker / DB client"
+    else
+        _say "       [WARN] setsid / perl / python not found : the worker stays in this terminal's process group"
+        echo "              Ctrl+C can cancel a running INSERT (ORA-01013) : leave [l] Total Log with q + Enter"
+    fi
     echo "       log  : ${_log}"
     echo "       run  : ${_run_sh}"
     echo "       view : [l] Total Log   or   bash $(basename "${SCRIPT_PATH}") --tail"
@@ -680,29 +751,43 @@ _launch() {
 # ============================================================
 # SQL building shared by [R] 1 / 4 (generate) and the table slots of run / retry (regenerate before each table)
 # ============================================================
-# _phase_cond <PRE|DDAY> : TGT_COND (target rows of the phase) / WHERE_EXPR (migration condition)
+# _phase_cond <PRE1|PRE2|DDAY> : COND_COL (DBM_MIG_MSTR column with the condition column name, MIG.env) /
+#   TGT_COND (target rows of the phase) / WHERE_EXPR (migration condition, operators from MIG.env)
+#   a row with a condition column is migrated in three steps (1st : PRE1~PRE2 , 2nd : PRE2~PRE3 , DDAY : PRE3~) ,
+#   a row without one only in DDAY (whole table) ; MIG_TYPE / MIG_FULL of DBM_MIG_MSTR are not used for this
 _phase_cond() {
     case "$1" in
-        PRE)
-            TGT_COND="MIG_TYPE = 'PRE' AND MIG_FULL = 'COND'"
-            WHERE_EXPR="'WHERE ' || COL_CONDITION || ' >= ''' || REPLACE(PRE1, '''', '''''') || ''' AND ' || COL_CONDITION || ' < ''' || REPLACE(PRE2, '''', '''''') || ''''"
+        PRE1)
+            COND_COL="${PRE_COND_COL}"
+            TGT_COND="${COND_COL} IS NOT NULL AND PRE1 IS NOT NULL AND PRE2 IS NOT NULL"
+            WHERE_EXPR="'WHERE ' || ${COND_COL} || ' ${COND_LOW_OP} ''' || REPLACE(PRE1, '''', '''''') || ''' AND ' || ${COND_COL} || ' ${COND_UP_OP} ''' || REPLACE(PRE2, '''', '''''') || ''''"
+            ;;
+        PRE2)
+            COND_COL="${PRE_COND_COL}"
+            TGT_COND="${COND_COL} IS NOT NULL AND PRE2 IS NOT NULL AND PRE3 IS NOT NULL"
+            WHERE_EXPR="'WHERE ' || ${COND_COL} || ' ${COND_LOW_OP} ''' || REPLACE(PRE2, '''', '''''') || ''' AND ' || ${COND_COL} || ' ${COND_UP_OP} ''' || REPLACE(PRE3, '''', '''''') || ''''"
             ;;
         DDAY)
-            TGT_COND="(MIG_TYPE = 'PRE' AND MIG_FULL = 'COND') OR (MIG_TYPE = 'DDAY' AND MIG_FULL = 'FULL')"
-            WHERE_EXPR="CASE WHEN MIG_TYPE = 'PRE' THEN 'WHERE ' || COL_CONDITION || ' >= ''' || REPLACE(PRE3, '''', '''''') || '''' END"
+            COND_COL="${DDAY_COND_COL}"
+            TGT_COND="${COND_COL} IS NULL OR PRE3 IS NOT NULL"
+            WHERE_EXPR="CASE WHEN ${COND_COL} IS NOT NULL THEN 'WHERE ' || ${COND_COL} || ' ${COND_LOW_OP} ''' || REPLACE(PRE3, '''', '''''') || '''' END"
             ;;
     esac
 }
 
 # _row_sql <WHERE on DBM_MIG_MSTR> : target rows (uses TGT_COND / WHERE_EXPR of _phase_cond)
-#   ROW|RUN,EXCL|TRANS_YN|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|MIG_TYPE|MIG_FULL|TAB_SIZE+LOB_SIZE|WHERE clause
+#   ROW|RUN,EXCL|TRANS_YN|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|MIG_TYPE|MIG_FULL|TAB_SIZE+LOB_SIZE
+#      |COL_CONDITION|PRE1|PRE2|PRE3|WHERE clause
+#   COL_CONDITION / PRE1~3 are raw values for the date split (| replaced by a space) ; WHERE clause is the last field
 _row_sql() {
     cat <<EOF
 SELECT 'ROW|'
        || CASE WHEN (${TGT_COND}) THEN 'RUN' ELSE 'EXCL' END
        || '|' || NVL(TRANS_YN, 'N')
        || '|' || SRC_OWNER || '|' || SRC_TABLE_NAME || '|' || TGT_OWNER || '|' || TGT_TABLE_NAME
-       || '|' || MIG_TYPE || '|' || MIG_FULL || '|' || (NVL(TAB_SIZE, 0) + NVL(LOB_SIZE, 0)) || '|'
+       || '|' || MIG_TYPE || '|' || MIG_FULL || '|' || (NVL(TAB_SIZE, 0) + NVL(LOB_SIZE, 0))
+       || '|' || REPLACE(${COND_COL}, '|', ' ') || '|' || REPLACE(PRE1, '|', ' ')
+       || '|' || REPLACE(PRE2, '|', ' ') || '|' || REPLACE(PRE3, '|', ' ') || '|'
        || CASE WHEN (${TGT_COND}) THEN ${WHERE_EXPR} END
   FROM ${MSTR_TAB}
  WHERE $1
@@ -733,9 +818,122 @@ SELECT 'COL|' || M.SRC_OWNER || '|' || M.SRC_TABLE_NAME || '|' || M.TGT_OWNER ||
 EOF
 }
 
+# _log_chunk_check : LOG_CHUNK=Y when DBM_XDN_LOG has CHUNK_NO / CHUNK_COND (chunk files need them) ; returns 1 when not
+#   sets the SQL pieces used by retry / status / unlock (without the columns : NULL, so the default layout keeps working)
+_log_chunk_check() {
+    LOG_CHUNK="N" ; LOG_CHUNK_SQL="NULL" ; LOG_CHUNK_ORDER="" ; LOG_CHUNK_LBL="NULL"
+    {
+        _sql_head | sed 's/^WHENEVER SQLERROR .*/WHENEVER SQLERROR CONTINUE/'
+        echo "SELECT 'LOGCHUNK|' || COUNT(CHUNK_NO) || '|' || COUNT(CHUNK_COND) FROM ${LOG_TAB} WHERE ROWNUM = 1;"
+        echo "EXIT;"
+    } > ${TMP_SQL}
+    _run_sql ${TMP_SQL}
+    grep -q '^LOGCHUNK|' ${TMP_OUT} || return 1
+    LOG_CHUNK="Y" ; LOG_CHUNK_SQL="CHUNK_NO" ; LOG_CHUNK_ORDER=", CHUNK_NO"
+    LOG_CHUNK_LBL="CASE WHEN CHUNK_NO IS NOT NULL THEN ' #' || CHUNK_NO END"
+    return 0
+}
+
+# _split_units <PHASE> : stdin = ROW lines of _row_sql (RUN rows) -> stdout = work units, fields separated by US ($'\x1f') :
+#   U US CHUNK_NO US CHUNK_TOTAL US CHUNK_FROM US CHUNK_TO US NOTE US <ROW line> US <WHERE clause of the unit>
+#   - SPLIT_UNIT=NONE / no condition / only one chunk : one unit per row (CHUNK_NO empty, WHERE = condition of the row)
+#   - date split  PRE1 : [PRE1, PRE2) -> [PRE1, b1) [b1, b2) ... [bk, PRE2)
+#                 PRE2 : [PRE2, PRE3) -> same, one month (SPLIT_UNIT x SPLIT_SIZE) at a time
+#                 DDAY : [PRE3, ... ) -> [PRE3, b1) ... [bk, open)   boundaries up to today, the last chunk has no upper bound
+#   - boundaries : start of the next DAY / MONTH / YEAR (+ SPLIT_SIZE) written in the format of the PRE value :
+#                  digits replaced, separators kept (20250101 / 2025-01-01 / 2025/01/01 / 202501 / 20250101000000 /
+#                  2025-01-01 00:00:00 ...) -> compared as the same text as today (VARCHAR) or the same literal (DATE)
+#   - operators : every bound is ">= b" / "< b" (the last DDAY chunk has no upper bound), like the phase condition itself
+#   - NOTE : why a condition was not split (not a date value, PRE2 in another format, ...) ; empty otherwise
+_split_units() {
+    local _lop="${COND_LOW_OP}" _uop="${COND_UP_OP}"
+    [[ "$1" == "DDAY" ]] && _uop=""       # DDAY : the last chunk has no upper bound
+    awk -v phase="$1" -v unit="${SPLIT_UNIT}" -v size="${SPLIT_SIZE}" -v today="$(date '+%Y%m%d')" \
+        -v lop="${_lop}" -v uop="${_uop}" '
+    function dfc(yy, mm, dd,   era, yoe, doy, doe) {
+        if (mm <= 2) yy--
+        era = int(yy / 400) ; yoe = yy - era * 400
+        doy = int((153 * (mm > 2 ? mm - 3 : mm + 9) + 2) / 5) + dd - 1
+        doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+        return era * 146097 + doe
+    }
+    function cfd(z,   era, doe, yoe, yy, doy, mp, dd, mm) {
+        era = int(z / 146097) ; doe = z - era * 146097
+        yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+        yy = yoe + era * 400 ; doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100))
+        mp = int((5 * doy + 2) / 153) ; dd = doy - int((153 * mp + 2) / 5) + 1
+        mm = (mp < 10) ? mp + 3 : mp - 9
+        if (mm <= 2) yy++
+        return sprintf("%04d%02d%02d", yy, mm, dd)
+    }
+    function digits(s,   t) { t = s ; gsub(/[^0-9]/, "", t) ; return t }
+    function skel(s,   t) { t = s ; gsub(/[0-9]/, "9", t) ; return t }
+    function isdate(s,   nn) {
+        if (s !~ /^[0-9][-0-9 .:\/]*[0-9]$/) return 0
+        nn = length(digits(s))
+        return (nn == 4 || nn == 6 || nn == 8 || nn == 10 || nn == 12 || nn == 14)
+    }
+    function fill(sk, dg,   i, j, c, o) {
+        o = "" ; j = 1
+        for (i = 1 ; i <= length(sk) ; i++) {
+            c = substr(sk, i, 1)
+            if (c == "9") { o = o substr(dg, j, 1) ; j++ } else o = o c
+        }
+        return o
+    }
+    function bnd(kk,   z, t) {
+        if (unit == "DAY")        t = cfd(dfc(y, m, d) + kk * size)
+        else if (unit == "MONTH") { z = y * 12 + m - 1 + kk * size ; t = sprintf("%04d%02d01", int(z / 12), z % 12 + 1) }
+        else                      t = sprintf("%04d0101", y + kk * size)
+        return substr(t "000000", 1, n)
+    }
+    function one(note) { print "U" US "" US "" US "" US "" US note US line US base }
+    BEGIN { FS = "|" ; US = "\037" ; need["DAY"] = 8 ; need["MONTH"] = 6 ; need["YEAR"] = 4 }
+    {
+        line = $0 ; colc = $11
+        base = "" ; for (i = 15 ; i <= NF ; i++) base = base (i > 15 ? "|" : "") $i
+        if (unit == "NONE" || base == "") { one("") ; next }
+        lo_col = (phase == "PRE1") ? "PRE1" : (phase == "PRE2") ? "PRE2" : "PRE3"
+        hi_col = (phase == "PRE1") ? "PRE2" : "PRE3"
+        s  = (phase == "PRE1") ? $12 : (phase == "PRE2") ? $13 : $14
+        hi = (phase == "PRE1") ? $13 : $14
+        if (colc == "") { one("COL_CONDITION is empty") ; next }
+        if (!isdate(s)) { one("not a date value : " lo_col " = " s) ; next }
+        sd = digits(s) ; n = length(sd) ; sk = skel(s)
+        if (n < need[unit]) { one("no " tolower(unit) " part in " s) ; next }
+        y = substr(sd, 1, 4) + 0 ; m = (n >= 6) ? substr(sd, 5, 2) + 0 : 1 ; d = (n >= 8) ? substr(sd, 7, 2) + 0 : 1
+        if (m < 1 || m > 12 || d < 1 || cfd(dfc(y, m, d)) != sprintf("%04d%02d%02d", y, m, d)) { one("not a valid date : " s) ; next }
+        if (phase != "DDAY") {
+            if (!isdate(hi) || skel(hi) != sk) { one(hi_col " is not in the format of " lo_col " : " hi) ; next }
+            ed = digits(hi)
+            if ((sd "") >= (ed "")) { one(lo_col " >= " hi_col) ; next }
+        } else {
+            ed = substr(today "000000", 1, n)
+        }
+        split("", b) ; b[0] = sd ; k = 0
+        while (k <= 9999) {
+            nb = bnd(k + 1)
+            if (phase != "DDAY") { if ((nb "") >= (ed "")) break }
+            else                 { if ((nb "") >  (ed "")) break }
+            k++ ; b[k] = nb
+        }
+        if (k > 9999) { one("more than 10000 chunks") ; next }
+        if (k == 0)   { one("") ; next }
+        for (i = 0 ; i <= k ; i++) {
+            fr = fill(sk, b[i])
+            to = (i < k) ? fill(sk, b[i + 1]) : ((phase != "DDAY") ? fill(sk, ed) : "")
+            lo = (i == 0) ? lop : ">="
+            up = (i < k) ? "<" : uop
+            w = "WHERE " colc " " lo " \047" fr "\047" (to != "" ? " AND " colc " " up " \047" to "\047" : "")
+            print "U" US (i + 1) US (k + 1) US fr US to US "" US line US w
+        }
+    }'
+}
+
 # _write_out <PHASE> <MSTR_ID> <TRANS_YN> <SO> <ST> <TO> <TT> <MIG_TYPE> <MIG_FULL> <TAB_SIZE> <WHERE> <COLS_FILE> <TCOL_TMP> <OUT_FILE>
 #   one .out file : header comments + INSERT INTO SELECT + COMMIT
 #   TRANS_YN = 'Y' : column list from COLS_FILE (COL| lines) ; sets W_COL_CNT / W_REN_CNT / W_ADD_CNT / W_SKIP_CNT
+#   chunk file : W_CHUNK_NO / W_CHUNK_TXT / W_CHUNK_FROM / W_CHUNK_TO / W_CHUNK_BASE set by the caller (empty = whole table)
 _write_out() {
     local PHASE="$1" MID="$2" TR="$3" SO="$4" ST="$5" TO="$6" TT="$7" MT="$8" MF="$9" SZ="${10}" WHERE_CLAUSE="${11}"
     local COLS="${12}" TCOL="${13}" OUT_FILE="${14}"
@@ -773,6 +971,13 @@ _write_out() {
         echo "-- TGT_TABLE_NAME : ${TT}"
         echo "-- SRC_DBLINK     : ${SRC_DBLINK}"
         echo "-- CONDITION      : ${WHERE_CLAUSE}"
+        if [[ -n "${W_CHUNK_NO}" ]] ; then
+            echo "-- CHUNK_NO       : ${W_CHUNK_NO}"
+            echo "-- CHUNK          : ${W_CHUNK_TXT}"
+            echo "-- CHUNK_FROM     : ${W_CHUNK_FROM}"
+            echo "-- CHUNK_TO       : ${W_CHUNK_TO}"
+            echo "-- BASE_COND      : ${W_CHUNK_BASE}"
+        fi
         echo "-- TRANS_YN       : ${TR}"
         echo "-- TAB_SIZE       : ${SZ}"
         if [[ "${TR}" == "Y" ]] ; then
@@ -791,12 +996,14 @@ _write_out() {
     } > "${OUT_FILE}"
 }
 
-# _refresh_out <OUT_FILE> <PHASE> <MSTR_ID> <SO> <ST> <TO> <TT> : regenerate one table's SQL right before it runs
+# _refresh_out <OUT_FILE> <PHASE> <MSTR_ID> <SO> <ST> <TO> <TT> [CHUNK_NO] : regenerate one table's SQL right before it runs
 #   reads DBM_MIG_MSTR (+ DBM_MIG_COL_MAP) again and overwrites OUT_FILE ; a changed file is kept as OUT_FILE.bak
+#   chunk file : the chunk range of the file header is kept (the split is made by Generate only) ;
+#                the file must exist and the condition of DBM_MIG_MSTR must be the same as when it was generated
 #   REFRESH_STATUS : OK (REFRESH_NOTE = created / no change / changed) / SKIP (no longer a target) / ERROR (query failed)
 _refresh_out() {
-    local F="$1" PHASE="$2" MID="$3" SO="$4" ST="$5" TO="$6" TT="$7"
-    local _mid _row _pair _t _c TR _so _st _to _tt MT MF SZ WHERE_CLAUSE
+    local F="$1" PHASE="$2" MID="$3" SO="$4" ST="$5" TO="$6" TT="$7" CN="$8"
+    local _mid _row _pair _t _c TR _so _st _to _tt MT MF SZ COLC _p1 _p2 _p3 WHERE_CLAUSE _base_old
     local _new="${TMP_SQL%.sql}.gen" _cols="${TMP_SQL%.sql}.cols" _tcol="${TMP_SQL%.sql}.tcol"
 
     REFRESH_STATUS="" ; REFRESH_NOTE=""
@@ -819,7 +1026,25 @@ _refresh_out() {
         fi
         return 2
     fi
-    IFS='|' read -r _t _c TR _so _st _to _tt MT MF SZ WHERE_CLAUSE <<< "${_row}"
+    IFS='|' read -r _t _c TR _so _st _to _tt MT MF SZ COLC _p1 _p2 _p3 WHERE_CLAUSE <<< "${_row}"
+
+    W_CHUNK_NO="" ; W_CHUNK_TXT="" ; W_CHUNK_FROM="" ; W_CHUNK_TO="" ; W_CHUNK_BASE=""
+    if [[ -n "${CN}" ]] ; then
+        if [[ ! -f "${F}" ]] ; then
+            REFRESH_STATUS="ERROR"
+            REFRESH_NOTE="chunk SQL file missing : chunk ranges are made by [R] Generate, generate ${PHASE} SQL again"
+            return 1
+        fi
+        _base_old=$(_hdr BASE_COND "${F}")
+        if [[ "${_base_old}" != "${WHERE_CLAUSE}" ]] ; then
+            REFRESH_STATUS="ERROR"
+            REFRESH_NOTE="condition changed in ${MSTR_TAB} (${_base_old} -> ${WHERE_CLAUSE:-no condition}) : chunk ranges are old, generate ${PHASE} SQL again"
+            return 1
+        fi
+        W_CHUNK_NO="${CN}" ; W_CHUNK_TXT=$(_hdr CHUNK "${F}") ; W_CHUNK_BASE="${WHERE_CLAUSE}"
+        W_CHUNK_FROM=$(_hdr CHUNK_FROM "${F}") ; W_CHUNK_TO=$(_hdr CHUNK_TO "${F}")
+        WHERE_CLAUSE=$(_hdr CONDITION "${F}")     # chunk condition of the file (range and operators kept)
+    fi
 
     : > "${_cols}"
     if [[ "${TR}" == "Y" ]] ; then
@@ -859,8 +1084,8 @@ _refresh_out() {
 # [R] 1 / 4. Generate SQL : _generate <PRE|DDAY>   (foreground)
 # ============================================================
 _fmt_row() {
-    local _t _c _tr _so _st _to _tt _mt _mf _sz _w
-    while IFS='|' read -r _t _c _tr _so _st _to _tt _mt _mf _sz _w ; do
+    local _t _c _tr _so _st _to _tt _mt _mf _sz _cc _p1 _p2 _p3 _w
+    while IFS='|' read -r _t _c _tr _so _st _to _tt _mt _mf _sz _cc _p1 _p2 _p3 _w ; do
         _out "  %s.%s -> %s.%s [%s/%s%s] %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "${_mt}" "${_mf}" \
              "$([[ "${_tr}" == "Y" ]] && echo "/COL_MAP")" "${_w:-(no condition)}"
     done
@@ -873,6 +1098,7 @@ _generate() {
     local _t _c TR SO ST TO TT MT MF SZ WHERE_CLAUSE OUT_FILE
     local _k _so _st _o _n _flag COL EXPR COL_CNT REN_CNT ADD_CNT SKIP_CNT COL_LIST SEL_LIST
     local NUM WARN_CNT GEN_START GEN_START_STR _map
+    local _u CN CT CF CTO _note _rowl BASE_WHERE _cc _p1 _p2 _p3 UNIT_CNT CHUNK_CNT SPLIT_TBL NOSPLIT_CNT _line
 
     _new_log "GEN_${PHASE}"
     _out "%s\n" "$SEP"
@@ -911,9 +1137,29 @@ _generate() {
         grep '^COL|' ${TMP_OUT} | sed 's/[[:space:]]*$//' > ${TMP_COLS}
     fi
 
+    # 3) work units : one per table, or chunk files when SPLIT_UNIT splits a date condition
+    _split_units "${PHASE}" < ${TMP_RUN} > ${TMP_UNIT}
+    UNIT_CNT=$(wc -l < ${TMP_UNIT} | tr -d ' ')
+    CHUNK_CNT=$(awk -F$'\x1f' '$2 != ""' ${TMP_UNIT} | wc -l | tr -d ' ')
+    SPLIT_TBL=$(awk -F$'\x1f' '$2 == "1"' ${TMP_UNIT} | wc -l | tr -d ' ')
+    NOSPLIT_CNT=$(awk -F$'\x1f' '$6 != ""' ${TMP_UNIT} | wc -l | tr -d ' ')
+
     _out "  MIG_YN=Y rows  : %s\n" "${TOTAL}"
-    _out "  Generate       : %s (TRANS_YN=Y column list by %s : %s)\n" "${RUN_CNT}" "${MAP_TAB}" "${MAP_CNT}"
+    _out "  Generate       : %s table(s) (TRANS_YN=Y column list by %s : %s)\n" "${RUN_CNT}" "${MAP_TAB}" "${MAP_CNT}"
     _out "  Excluded       : %s (not a %s target by MIG_TYPE / MIG_FULL)\n" "${EXCL_CNT}" "${PHASE}"
+    case "${PHASE}" in
+        PRE1) _out "  Condition      : %s.%s  >= PRE1 AND < PRE2   (1st step, condition column : MIG.env PRE_COND_COL)\n" \
+                   "${MSTR_TAB}" "${PRE_COND_COL}" ;;
+        PRE2) _out "  Condition      : %s.%s  >= PRE2 AND < PRE3   (2nd step, condition column : MIG.env PRE_COND_COL)\n" \
+                   "${MSTR_TAB}" "${PRE_COND_COL}" ;;
+        *)    _out "  Condition      : %s.%s  >= PRE3   (condition column : MIG.env DDAY_COND_COL ; no condition column : whole table)\n" \
+                   "${MSTR_TAB}" "${DDAY_COND_COL}" ;;
+    esac
+    if [[ "${SPLIT_UNIT}" != "NONE" ]] ; then
+        _out "  Split          : %s (MIG.env SPLIT_UNIT / SPLIT_SIZE) : %s table(s) -> %s chunk file(s), not split %s\n" \
+             "${SPLIT_TEXT}" "${SPLIT_TBL}" "${CHUNK_CNT}" "${NOSPLIT_CNT}"
+    fi
+    _out "  SQL files      : %s\n" "${UNIT_CNT}"
     _out "  Existing .out  : %s (deleted before generate)\n\n" "${OLD_CNT}"
 
     if [[ ${RUN_CNT} -eq 0 ]] ; then
@@ -923,7 +1169,22 @@ _generate() {
 
     _head_tail ${TMP_RUN} _fmt_row
 
-    if ! _confirm "Delete ${OLD_CNT} existing .out and generate ${RUN_CNT} SQL file(s) in cmd/${PHASE}?" ; then
+    if [[ ${NOSPLIT_CNT} -gt 0 ]] ; then
+        _out "  [WARN] %s condition(s) not split (one SQL file each) :\n" "${NOSPLIT_CNT}"
+        awk -F$'\x1f' '$6 != "" { split($7, r, "|") ; printf "    %s.%s -> %s.%s : %s\n", r[4], r[5], r[6], r[7], $6 }' ${TMP_UNIT} \
+            | head -10 | while IFS= read -r _line ; do _out "%s\n" "${_line}" ; done
+        [[ ${NOSPLIT_CNT} -gt 10 ]] && _out "    ... %s more\n" "$(( NOSPLIT_CNT - 10 ))"
+        _out "\n"
+    fi
+
+    # chunk files are logged one row per chunk : DBM_XDN_LOG needs CHUNK_NO / CHUNK_COND
+    if [[ ${CHUNK_CNT} -gt 0 ]] && ! _log_chunk_check ; then
+        _fail "${LOG_TAB} has no CHUNK_NO / CHUNK_COND column (needed for chunk files, see DDL_Script/DBM_XDN_LOG.sql)"
+        _out "  ALTER TABLE %s ADD (CHUNK_NO NUMBER NULL, CHUNK_COND VARCHAR2(4000) NULL);\n" "${LOG_TAB}"
+        return 1
+    fi
+
+    if ! _confirm "Delete ${OLD_CNT} existing .out and generate ${UNIT_CNT} SQL file(s) in cmd/${PHASE}?" ; then
         _log "Generate ${PHASE} SQL cancelled by user"
         return 0
     fi
@@ -937,8 +1198,9 @@ _generate() {
     : > ${TMP_GENBUF}
     TOTAL_DEST="${TMP_GENBUF}"
     _total "\n%s\n" "$SEP"
-    _total " [GEN] %s  MSTR_ID=%s  TABLES=%s  PID=%s\n" "${PHASE}" "${MSTR_ID}" "${RUN_CNT}" "$$"
+    _total " [GEN] %s  MSTR_ID=%s  TABLES=%s  FILES=%s  SPLIT=%s  PID=%s\n" "${PHASE}" "${MSTR_ID}" "${RUN_CNT}" "${UNIT_CNT}" "${SPLIT_TEXT}" "$$"
     _total "       START=%s  DB=%s  DBLINK=%s\n" "${GEN_START_STR}" "${DB_TYPE}" "${SRC_DBLINK}"
+    _total "       COND=%s\n" "${COND_TEXT}"
     _total "       MIG_YN=Y rows %s  generate %s (COL_MAP %s)  excluded %s  deleted old .out %s\n" \
            "${TOTAL}" "${RUN_CNT}" "${MAP_CNT}" "${EXCL_CNT}" "${OLD_CNT}"
     _total "       DIR=%s\n" "${OUT_DIR}"
@@ -946,9 +1208,10 @@ _generate() {
     _total "%s\n\n" "$SEP"
     TOTAL_ON="Y"
 
-    while IFS='|' read -r _t _c TR SO ST TO TT MT MF SZ WHERE_CLAUSE <&3 ; do
+    while IFS=$'\x1f' read -r _u CN CT CF CTO _note _rowl WHERE_CLAUSE <&3 ; do
+        IFS='|' read -r _t _c TR SO ST TO TT MT MF SZ _cc _p1 _p2 _p3 BASE_WHERE <<< "${_rowl}"
         NUM=$(( NUM + 1 ))
-        OUT_FILE="${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}")"
+        OUT_FILE="${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}" "${CN}")"
         if [[ -f "${OUT_FILE}" ]] ; then
             _out "  [WARN] duplicate row %s.%s -> %s.%s : %s overwritten\n" "${SO}" "${ST}" "${TO}" "${TT}" "$(basename "${OUT_FILE}")"
             DUP_CNT=$(( DUP_CNT + 1 )) ; WARN_CNT=$(( WARN_CNT + 1 ))
@@ -956,19 +1219,24 @@ _generate() {
             GEN_CNT=$(( GEN_CNT + 1 ))
         fi
 
+        # --- chunk header (empty = whole table) ---
+        W_CHUNK_NO="${CN}" ; W_CHUNK_FROM="${CF}" ; W_CHUNK_TO="${CTO}" ; W_CHUNK_BASE="${BASE_WHERE}" ; W_CHUNK_TXT=""
+        [[ -n "${CN}" ]] && W_CHUNK_TXT="${CN}/${CT}  ${SPLIT_TEXT}  [${CF} ~ ${CTO:-open})"
+
         # --- header + INSERT INTO SELECT (TRANS_YN = 'Y' : column list, RENAME / ADD from DBM_MIG_COL_MAP) ---
         _write_out "${PHASE}" "${MSTR_ID}" "${TR}" "${SO}" "${ST}" "${TO}" "${TT}" "${MT}" "${MF}" "${SZ}" "${WHERE_CLAUSE}" \
                    "${TMP_COLS}" "${TMP_TCOL}" "${OUT_FILE}"
-        if [[ "${TR}" == "Y" && ${W_COL_CNT} -eq 0 ]] ; then
+        if [[ "${TR}" == "Y" && ${W_COL_CNT} -eq 0 && "${CN:-1}" == "1" ]] ; then
             _out "  [WARN] %s.%s : TRANS_YN=Y but no column in ALL_TAB_COLUMNS, SELECT * written\n" "${TO}" "${TT}"
             WARN_CNT=$(( WARN_CNT + 1 ))
         fi
 
         # one line per generated file : GEN log + integrated log (not the terminal)
         _map="" ; [[ "${TR}" == "Y" ]] && _map="  COL_MAP(columns ${W_COL_CNT}, RENAME ${W_REN_CNT}, ADD ${W_ADD_CNT})"
-        _file_out "  [%*d/%s]  %s.%s -> %s.%s  %s  %s%s\n" "${#RUN_CNT}" "${NUM}" "${RUN_CNT}" \
-                  "${SO}" "${ST}" "${TO}" "${TT}" "$(basename "${OUT_FILE}")" "${WHERE_CLAUSE:-(no condition)}" "${_map}"
-    done 3< ${TMP_RUN}
+        _file_out "  [%*d/%s]  %s.%s -> %s.%s%s  %s  %s%s\n" "${#UNIT_CNT}" "${NUM}" "${UNIT_CNT}" \
+                  "${SO}" "${ST}" "${TO}" "${TT}" "${CN:+ #${CN}/${CT}}" "$(basename "${OUT_FILE}")" "${WHERE_CLAUSE:-(no condition)}" "${_map}"
+    done 3< ${TMP_UNIT}
+    W_CHUNK_NO="" ; W_CHUNK_TXT="" ; W_CHUNK_FROM="" ; W_CHUNK_TO="" ; W_CHUNK_BASE=""
 
     _ok "${GEN_CNT} SQL file(s) generated in ${OUT_DIR}"
     [[ ${DUP_CNT} -gt 0 ]] && _out "  [WARN] %s duplicate target row(s) overwritten\n" "${DUP_CNT}"
@@ -990,18 +1258,18 @@ _generate() {
 # [R] 2 / 5. Run : preview + confirm in the menu, work in the background worker
 # ============================================================
 _fmt_file() {
-    local _f _w
+    local _f _w _c
     while IFS= read -r _f ; do
-        _w=$(_hdr CONDITION "${_f}")
-        _out "  %s.%s -> %s.%s %s\n" "$(_hdr SRC_OWNER "${_f}")" "$(_hdr SRC_TABLE_NAME "${_f}")" \
-             "$(_hdr TGT_OWNER "${_f}")" "$(_hdr TGT_TABLE_NAME "${_f}")" "${_w:-(no condition)}"
+        _w=$(_hdr CONDITION "${_f}") ; _c=$(_hdr CHUNK "${_f}")
+        _out "  %s.%s -> %s.%s %s%s\n" "$(_hdr SRC_OWNER "${_f}")" "$(_hdr SRC_TABLE_NAME "${_f}")" \
+             "$(_hdr TGT_OWNER "${_f}")" "$(_hdr TGT_TABLE_NAME "${_f}")" "${_c:+[chunk ${_c%%  *}] }" "${_w:-(no condition)}"
     done
 }
 
 _menu_run() {
     local PHASE="$1"
     local OUT_DIR="${CMD_DIR}/${PHASE}"
-    local TOTAL RUN_ID
+    local TOTAL RUN_ID CH_CNT
 
     _out "%s\n" "$SEP"
     _log "Run ${PHASE} migration : ${OUT_DIR}"
@@ -1011,6 +1279,13 @@ _menu_run() {
     TOTAL=$(wc -l < ${TMP_LIST} | tr -d ' ')
     if [[ ${TOTAL} -eq 0 ]] ; then
         _fail "No .out file in ${OUT_DIR} (generate ${PHASE} SQL first)"
+        return 1
+    fi
+
+    CH_CNT=$(_out_headers < ${TMP_LIST} | awk -F'|' '$8 != ""' | wc -l | tr -d ' ')
+    if [[ ${CH_CNT} -gt 0 ]] && ! _log_chunk_check ; then
+        _fail "${CH_CNT} chunk file(s) but ${LOG_TAB} has no CHUNK_NO / CHUNK_COND column (see DDL_Script/DBM_XDN_LOG.sql)"
+        _out "  ALTER TABLE %s ADD (CHUNK_NO NUMBER NULL, CHUNK_COND VARCHAR2(4000) NULL);\n" "${LOG_TAB}"
         return 1
     fi
 
@@ -1028,6 +1303,9 @@ EOF
 
     _out "  RUN_ID    : %s\n" "${RUN_ID}"
     _out "  SQL files : %s\n" "${TOTAL}"
+    if [[ ${CH_CNT} -gt 0 ]] ; then
+        _out "  Chunks    : %s chunk file(s) : INSERT /*+ NOAPPEND */ without PARALLEL DML, chunks of one table run at once\n" "${CH_CNT}"
+    fi
     _out "  Worker    : %s table(s) at once, order TAB_SIZE small first\n" "${WORKER_DEGREE}"
     if [[ "${SQL_REFRESH}" == "Y" ]] ; then
         _out "  SQL       : SQL_REFRESH=Y : regenerated from %s right before each table (cmd/%s/*.out overwritten, changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}" "${PHASE}"
@@ -1048,36 +1326,40 @@ EOF
 # [R] 3 / 6. Retry FAILED : FAIL rows of the latest RUN_ID of the phase
 # ============================================================
 _fmt_fail() {
-    local _t _so _st _to _tt _err _f
-    while IFS='|' read -r _t _so _st _to _tt _err ; do
-        _f="${CMD_DIR}/${PHASE}/$(_out_name "${_to}" "${_tt}" "${_so}" "${_st}")"
-        _out "  %s.%s -> %s.%s : %s %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "$(basename "${_f}")" "$([[ -f "${_f}" ]] || { [[ "${SQL_REFRESH}" == "Y" ]] && echo "[SQL file missing : regenerated before run]" || echo "[SQL file missing]" ; })"
+    local _t _so _st _to _tt _cn _err _f
+    while IFS='|' read -r _t _so _st _to _tt _cn _err ; do
+        _cn=$(printf "%s" "${_cn}" | tr -d '[:space:]')
+        _f="${CMD_DIR}/${PHASE}/$(_out_name "${_to}" "${_tt}" "${_so}" "${_st}" "${_cn}")"
+        _out "  %s.%s -> %s.%s%s : %s %s\n" "${_so}" "${_st}" "${_to}" "${_tt}" "${_cn:+ #${_cn}}" "$(basename "${_f}")" "$([[ -f "${_f}" ]] || { [[ "${SQL_REFRESH}" == "Y" ]] && echo "[SQL file missing : regenerated before run]" || echo "[SQL file missing]" ; })"
         _out "      last error : %s\n" "${_err}"
     done
 }
 
-# _fail_rows_sql <PHASE> <RUN_ID expression> : ROW|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|ERROR_MSG
+# _fail_rows_sql <PHASE> <RUN_ID expression> : ROW|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|CHUNK_NO|ERROR_MSG
+#   CHUNK_NO empty for a whole table (or when DBM_XDN_LOG has no CHUNK_NO column : run _log_chunk_check first)
 _fail_rows_sql() {
     cat <<EOF
 SELECT 'ROW|' || SRC_OWNER || '|' || SRC_TABLE_NAME || '|' || TGT_OWNER || '|' || TGT_TABLE_NAME
-       || '|' || SUBSTR(ERROR_MSG, 1, 200)
+       || '|' || ${LOG_CHUNK_SQL} || '|' || SUBSTR(ERROR_MSG, 1, 200)
   FROM ${LOG_TAB}
  WHERE MSTR_ID = '${M_ID}'
    AND MIG_TYPE = '$1'
    AND STATUS = 'FAIL'
    AND RUN_ID = $2
- ORDER BY SRC_OWNER, SRC_TABLE_NAME;
+ ORDER BY SRC_OWNER, SRC_TABLE_NAME${LOG_CHUNK_ORDER};
 EOF
 }
 
 _menu_retry() {
     local PHASE="$1"
     local OUT_DIR="${CMD_DIR}/${PHASE}"
-    local RUN_ID TOTAL MISS_CNT _t SO ST TO TT _err
+    local RUN_ID TOTAL MISS_CNT _t SO ST TO TT CN _err
 
     _out "%s\n" "$SEP"
     _log "Retry ${PHASE} FAILED : MSTR_ID=${MSTR_ID}"
     _out "%s\n" "$SEP"
+
+    _log_chunk_check
 
     cat > ${TMP_SQL} <<EOF
 $(_sql_head)
@@ -1106,12 +1388,13 @@ EOF
     fi
 
     MISS_CNT=0
-    while IFS='|' read -r _t SO ST TO TT _err ; do
-        [[ -f "${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}")" ]] || MISS_CNT=$(( MISS_CNT + 1 ))
+    while IFS='|' read -r _t SO ST TO TT CN _err ; do
+        CN=$(printf "%s" "${CN}" | tr -d '[:space:]')
+        [[ -f "${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}" "${CN}")" ]] || MISS_CNT=$(( MISS_CNT + 1 ))
     done < ${TMP_LIST}
 
     _out "  RUN_ID            : %s (latest %s run)\n" "${RUN_ID}" "${PHASE}"
-    _out "  FAIL tables       : %s\n" "${TOTAL}"
+    _out "  FAIL tables       : %s (chunk : %s)\n" "${TOTAL}" "$(awk -F'|' '$6 ~ /[0-9]/' ${TMP_LIST} | wc -l | tr -d ' ')"
     if [[ "${SQL_REFRESH}" == "Y" ]] ; then
         _out "  SQL file missing  : %s (regenerated before run while still a target)\n" "${MISS_CNT}"
         _out "  SQL               : SQL_REFRESH=Y : regenerated from %s right before each table (changed -> .bak, no longer a target -> SKIP)\n" "${MSTR_TAB}"
@@ -1150,7 +1433,7 @@ _view_log() {
             echo " stale lock : ${L_ACTION} ${L_PHASE} RUN_ID=${L_RUN_ID} PID=${L_PID} (worker process not found)"
         fi
     fi
-    echo " >>> type q + Enter to return to the menu <<<"
+    echo " >>> type q + Enter to return to the menu (Ctrl+C is ignored here) <<<"
     echo "$SEP"
 
     trap '' INT
@@ -1200,13 +1483,13 @@ SELECT 'RID|' || MAX(RUN_ID) || '|' || MAX(MIG_TYPE) FROM ${LOG_TAB} WHERE MSTR_
 SELECT 'ST|' || STATUS || '|' || COUNT(*) FROM ${LOG_TAB} WHERE MSTR_ID = '${M_ID}' AND RUN_ID = ${RID_EXPR} GROUP BY STATUS;
 SELECT 'TM|' || TO_CHAR(MIN(START_TIME), 'YYYY-MM-DD HH24:MI:SS') || '|' || TO_CHAR(MAX(END_TIME), 'YYYY-MM-DD HH24:MI:SS')
   FROM ${LOG_TAB} WHERE MSTR_ID = '${M_ID}' AND RUN_ID = ${RID_EXPR};
-SELECT 'RUNNING|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME
+SELECT 'RUNNING|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME || ${LOG_CHUNK_LBL}
        || '|' || TO_CHAR(START_TIME, 'YYYY-MM-DD HH24:MI:SS') || '|' || ROUND((SYSDATE - START_TIME) * 86400)
   FROM ${LOG_TAB} WHERE MSTR_ID = '${M_ID}' AND RUN_ID = ${RID_EXPR} AND STATUS = 'RUNNING';
-SELECT 'FAIL|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME
+SELECT 'FAIL|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME || ${LOG_CHUNK_LBL}
        || '|' || SUBSTR(ERROR_MSG, 1, 100)
   FROM ${LOG_TAB} WHERE MSTR_ID = '${M_ID}' AND RUN_ID = ${RID_EXPR} AND STATUS = 'FAIL'
- ORDER BY SRC_OWNER, SRC_TABLE_NAME;
+ ORDER BY SRC_OWNER, SRC_TABLE_NAME${LOG_CHUNK_ORDER};
 EXIT;
 EOF
 
@@ -1310,7 +1593,7 @@ _unlock() {
 
     cat > ${TMP_SQL} <<EOF
 $(_sql_head)
-SELECT 'ULROW|' || RUN_ID || '|' || MIG_TYPE || '|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME
+SELECT 'ULROW|' || RUN_ID || '|' || MIG_TYPE || '|' || SRC_OWNER || '.' || SRC_TABLE_NAME || ' -> ' || TGT_OWNER || '.' || TGT_TABLE_NAME || ${LOG_CHUNK_LBL}
        || '|' || TO_CHAR(START_TIME, 'YYYY-MM-DD HH24:MI:SS')
   FROM ${LOG_TAB} WHERE MSTR_ID = '${M_ID}' AND STATUS = 'RUNNING'
  ORDER BY RUN_ID, SRC_OWNER, SRC_TABLE_NAME;
@@ -1399,16 +1682,16 @@ _hb_stop() {
     HB_PID=""
 }
 
-# _exec_table <OUT_FILE> <RUN_ID> <PHASE> <MSTR_ID> <SRC_OWNER> <SRC_TABLE> <TGT_OWNER> <TGT_TABLE> <NUM> <TOTAL> [PRE_ERROR]
-#   run one .out file, update its DBM_XDN_LOG row, write one block to the progress log
+# _exec_table <OUT_FILE> <RUN_ID> <PHASE> <MSTR_ID> <SRC_OWNER> <SRC_TABLE> <TGT_OWNER> <TGT_TABLE> <NUM> <TOTAL> [CHUNK_NO] [PRE_ERROR]
+#   run one .out file, update its DBM_XDN_LOG row (chunk : the row of CHUNK_NO), write one block to the progress log
 #   PRE_ERROR (e.g. SQL regenerate failed) : FAIL without running ; result -> EXEC_STATUS / EXEC_ERR / EXEC_LABEL
 _exec_table() {
-    local F="$1" RID="$2" PHASE="$3" MID="$4" SO="$5" ST="$6" TO="$7" TT="$8" NUM="$9" TOTAL="${10}"
+    local F="$1" RID="$2" PHASE="$3" MID="$4" SO="$5" ST="$6" TO="$7" TT="$8" NUM="$9" TOTAL="${10}" CN="${11}" PRE_ERR="${12}"
     local DBL WHERE_CLAUSE SRC_OBJ TGT_OBJ KEY ERR_SQL CNT_SRC CNT_INS CNT_TGT T_START T_END _cmp
 
     TGT_OBJ="${TO}.${TT}"
-    KEY="RUN_ID = ${RID} AND MSTR_ID = '$(_q "${MID}")' AND SRC_OWNER = '$(_q "${SO}")' AND SRC_TABLE_NAME = '$(_q "${ST}")' AND TGT_OWNER = '$(_q "${TO}")' AND TGT_TABLE_NAME = '$(_q "${TT}")' AND MIG_TYPE = '${PHASE}'"
-    EXEC_STATUS="SUCCESS" ; EXEC_ERR="" ; EXEC_LABEL="${SO}.${ST} -> ${TGT_OBJ}" ; EXEC_ELAPSED="00:00:00"
+    KEY="RUN_ID = ${RID} AND MSTR_ID = '$(_q "${MID}")' AND SRC_OWNER = '$(_q "${SO}")' AND SRC_TABLE_NAME = '$(_q "${ST}")' AND TGT_OWNER = '$(_q "${TO}")' AND TGT_TABLE_NAME = '$(_q "${TT}")' AND MIG_TYPE = '${PHASE}'${CN:+ AND CHUNK_NO = ${CN}}"
+    EXEC_STATUS="SUCCESS" ; EXEC_ERR="" ; EXEC_LABEL="${SO}.${ST} -> ${TGT_OBJ}${CN:+ #${CN}}" ; EXEC_ELAPSED="00:00:00"
 
     _out "\n%s\n" "$DASH"
     _out "[%*d/%s]  %s%s\n" "${#TOTAL}" "${NUM}" "${TOTAL}" "${EXEC_LABEL}" "${W_SLOT:+   (W${W_SLOT})}"
@@ -1417,8 +1700,8 @@ _exec_table() {
     [[ -n "${REFRESH_NOTE}" ]] && _out "  SQL file  : %s\n" "${REFRESH_NOTE}"
 
     # --- SQL could not be (re)generated / SQL file missing : FAIL without running ---
-    if [[ -n "${11}" || ! -f "${F}" ]] ; then
-        EXEC_STATUS="FAIL" ; EXEC_ERR="${11:-SQL file not found : ${F}}"
+    if [[ -n "${PRE_ERR}" || ! -f "${F}" ]] ; then
+        EXEC_STATUS="FAIL" ; EXEC_ERR="${PRE_ERR:-SQL file not found : ${F}}"
         cat > ${TMP_SQL} <<EOF
 $(_sql_head)
 UPDATE ${LOG_TAB} SET STATUS = 'FAIL', START_TIME = SYSDATE, END_TIME = SYSDATE, ELAPSED_TIME = '00:00:00', ERROR_MSG = '$(_q "${EXEC_ERR}")' WHERE ${KEY};
@@ -1435,7 +1718,13 @@ EOF
     SRC_OBJ="${SO}.${ST}@${DBL}"
 
     _out "  Condition : %s\n" "${WHERE_CLAUSE:-(none)}"
-    _out "  Parallel  : %s  (worker W%s)\n" "${PARALLEL_DEGREE}" "${W_SLOT:-1}"
+    if [[ -n "${CN}" ]] ; then
+        _out "  Chunk     : %s\n" "$(_hdr CHUNK "${F}")"
+        # chunks of one table run at once : conventional INSERT (APPEND / PARALLEL DML lock the whole table)
+        INS_HINT="NOAPPEND" ; PDML="N"
+    fi
+    _out "  Parallel  : %s  (worker W%s)%s\n" "${PARALLEL_DEGREE}" "${W_SLOT:-1}" \
+         "${CN:+  chunk : INSERT /*+ NOAPPEND */, SELECT /*+ ${SEL_HINT:-no hint} */, no PARALLEL DML}"
     T_START=$(date +%s)
     _out "  Start     : %s\n" "$(date '+%Y-%m-%d %H:%M:%S')"
     _hb_start "${T_START}" "$(printf "[%*d/%s] %s" "${#TOTAL}" "${NUM}" "${TOTAL}" "${EXEC_LABEL}")"
@@ -1540,12 +1829,12 @@ _event() {
     printf "%s\n" "${_l}" >> "${TOTAL_LOG}"
 }
 
-# _slot_run <SLOT> <NUM> <TOTAL> <FILE> <RUN_ID> <PHASE> <MSTR_ID> <SO> <ST> <TO> <TT> : one table (background sub shell)
+# _slot_run <SLOT> <NUM> <TOTAL> <FILE> <RUN_ID> <PHASE> <MSTR_ID> <SO> <ST> <TO> <TT> [CHUNK_NO] : one table / chunk (background sub shell)
 #   own temp files <base>.sql / .out ; START event at once ; table block -> <base>.blk , SQL detail -> <base>.det ,
 #   result "STATUS|ELAPSED|ERROR" -> <base>.res ; the coordinator (_dispatch) writes them to the logs when it ends
 _slot_run() {
-    local SLOT="$1" NUM="$2" TOTAL="$3" F="$4" RID="$5" PHASE="$6" MID="$7" SO="$8" ST="$9" TO="${10}" TT="${11}"
-    local _base="${TMP_DIR}/RUN_MIG_${COORD_PID}_W${SLOT}"
+    local SLOT="$1" NUM="$2" TOTAL="$3" F="$4" RID="$5" PHASE="$6" MID="$7" SO="$8" ST="$9" TO="${10}" TT="${11}" CN="${12}"
+    local _base="${TMP_DIR}/RUN_MIG_${COORD_PID}_W${SLOT}" _lbl="${8}.${9} -> ${10}.${11}${12:+ #${12}}"
 
     trap - EXIT
     trap 'exit 143' TERM
@@ -1557,26 +1846,26 @@ _slot_run() {
     rm -f "${_base}.res"
 
     _hint_load      # PARALLEL of this table = value in MIG_HINT.conf when it starts
-    printf "%s|%s|%s|%s|%s\n" "${NUM}" "${TOTAL}" "${SO}.${ST} -> ${TO}.${TT}" "$(date +%s)" "${PARALLEL_DEGREE}" > "${SLOT_PREFIX}${SLOT}"
-    _event "${SLOT}" "$(printf "START    [%*d/%s] %s.%s -> %s.%s  (PARALLEL %s)" "${#TOTAL}" "${NUM}" "${TOTAL}" "${SO}" "${ST}" "${TO}" "${TT}" "${PARALLEL_DEGREE}")"
+    printf "%s|%s|%s|%s|%s\n" "${NUM}" "${TOTAL}" "${_lbl}" "$(date +%s)" "${PARALLEL_DEGREE}" > "${SLOT_PREFIX}${SLOT}"
+    _event "${SLOT}" "$(printf "START    [%*d/%s] %s  (PARALLEL %s%s)" "${#TOTAL}" "${NUM}" "${TOTAL}" "${_lbl}" "${PARALLEL_DEGREE}" "${CN:+, NOAPPEND}")"
 
     # SQL_REFRESH=Y : SQL of this table regenerated from DBM_MIG_MSTR / DBM_MIG_COL_MAP right before it runs (cmd/<PHASE>/*.out overwritten)
     REFRESH_STATUS="" ; REFRESH_NOTE=""
-    [[ "${SQL_REFRESH}" == "Y" ]] && _refresh_out "${F}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}"
+    [[ "${SQL_REFRESH}" == "Y" ]] && _refresh_out "${F}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${CN}"
     case "${REFRESH_STATUS}" in
         SKIP)
             EXEC_STATUS="SKIP" ; EXEC_ERR="${REFRESH_NOTE}" ; EXEC_ELAPSED="00:00:00"
             _out "\n%s\n" "$DASH"
-            _out "[%*d/%s]  %s.%s -> %s.%s   (W%s)\n" "${#TOTAL}" "${NUM}" "${TOTAL}" "${SO}" "${ST}" "${TO}" "${TT}" "${SLOT}"
+            _out "[%*d/%s]  %s   (W%s)\n" "${#TOTAL}" "${NUM}" "${TOTAL}" "${_lbl}" "${SLOT}"
             _out "%s\n" "$DASH"
             _out "  File      : %s\n" "$(basename "${F}")"
             _out "  Result    : SKIP  %s (not run, %s row left as it is)\n" "${REFRESH_NOTE}" "${LOG_TAB}"
             ;;
         ERROR)
-            _exec_table "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${NUM}" "${TOTAL}" "${REFRESH_NOTE}"
+            _exec_table "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${NUM}" "${TOTAL}" "${CN}" "${REFRESH_NOTE}"
             ;;
         *)
-            _exec_table "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${NUM}" "${TOTAL}"
+            _exec_table "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${NUM}" "${TOTAL}" "${CN}"
             ;;
     esac
 
@@ -1585,13 +1874,13 @@ _slot_run() {
 }
 
 # _dispatch <PHASE> <RUN_ID> <QUEUE_FILE> <TOTAL> <start epoch>
-#   QUEUE_FILE lines : TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE|TGT_OWNER|TGT_TABLE (already in run order)
-#   up to WORKER_DEGREE tables at once ; MIG_HINT.conf and the stop file are checked every second
+#   QUEUE_FILE lines : TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE|TGT_OWNER|TGT_TABLE|CHUNK_NO|CONDITION (already in run order)
+#   up to WORKER_DEGREE tables (or chunks) at once ; MIG_HINT.conf and the stop file are checked every second
 #   a finished table : SUCCESS / FAIL event + its block + Progress are appended to the logs by this one process
 _dispatch() {
     local PHASE="$1" RID="$2" QUEUE="$3" TOTAL="$4" RSTART="$5"
     local -a S_PID S_NUM S_LABEL
-    local NUM=0 RUNNING=0 S_MAX=0 _s _base _st _el _err _msg _sz F MID SO ST TO TT
+    local NUM=0 RUNNING=0 S_MAX=0 _s _base _st _el _err _msg _sz F MID SO ST TO TT CN _cond
 
     exec 4< "${QUEUE}"
     while : ; do
@@ -1638,14 +1927,14 @@ _dispatch() {
             # RUNNING < WORKER_DEGREE : after the degree is lowered, new tables wait until enough running tables end
             for (( _s = 1 ; _s <= WORKER_DEGREE && RUNNING < WORKER_DEGREE && NUM < TOTAL ; _s++ )) ; do
                 [[ -z "${S_PID[_s]}" ]] || continue
-                if ! IFS='|' read -r _sz F MID SO ST TO TT <&4 ; then
+                if ! IFS='|' read -r _sz F MID SO ST TO TT CN _cond <&4 ; then
                     NUM=${TOTAL}
                     break
                 fi
                 NUM=$(( NUM + 1 )) ; RUNNING=$(( RUNNING + 1 ))
-                S_NUM[_s]="${NUM}" ; S_LABEL[_s]="${SO}.${ST} -> ${TO}.${TT}"
+                S_NUM[_s]="${NUM}" ; S_LABEL[_s]="${SO}.${ST} -> ${TO}.${TT}${CN:+ #${CN}}"
                 (( _s > S_MAX )) && S_MAX=${_s}
-                _slot_run "${_s}" "${NUM}" "${TOTAL}" "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" &
+                _slot_run "${_s}" "${NUM}" "${TOTAL}" "${F}" "${RID}" "${PHASE}" "${MID}" "${SO}" "${ST}" "${TO}" "${TT}" "${CN}" &
                 S_PID[_s]=$!
             done
         fi
@@ -1669,6 +1958,7 @@ _run_header() {
     _out "       WORKER=%s  HINT=%s   (changeable while running : [h] Hint)\n" "${WORKER_DEGREE}" "$(_hint_text)"
     _out "       LOG=%s\n" "${LOGFILE}"
     _out "       DETAIL=%s\n" "${DETAIL_LOG}"
+    _out "       SESSION=%s  (new session : terminal Ctrl+C can not cancel the running SQL)\n" "${MIG_SESSION:-same process group}"
     _out "%s\n" "$SEP"
 }
 
@@ -1678,7 +1968,7 @@ _run_footer() {
     local _end _result _menu
     _end=$(date +%s)
     _result="${RUN_RESULT:-DONE}" ; [[ "${STOPPED}" == "Y" ]] && _result="STOPPED"
-    [[ "$2" == "PRE" ]] && _menu=3 || _menu=6
+    case "$2" in PRE1|PRE2) _menu="[3] Retry PRE FAILED -> step ${2#PRE}" ;; *) _menu="[6] Retry DDAY FAILED" ;; esac
 
     _out "\n%s\n" "$SEP"
     _out " [END] %s %s  MSTR_ID=%s  RUN_ID=%s  RESULT=%s\n" "$1" "$2" "${MSTR_ID}" "$3" "${_result}"
@@ -1687,7 +1977,7 @@ _run_footer() {
     if [[ ${FAIL_CNT} -gt 0 ]] ; then
         _out " FAILED :\n"
         _out "%b" "${FAIL_LIST}"
-        _out " RETRY  : 02.RUN_MIG.sh -> [R] Run -> [%s] Retry %s FAILED\n" "${_menu}" "$2"
+        _out " RETRY  : 02.RUN_MIG.sh -> [R] Run -> %s\n" "${_menu}"
     fi
     if [[ ${SKIP_CNT} -gt 0 ]] ; then
         _out " SKIPPED (no longer a target in %s, not run) :\n" "${MSTR_TAB}"
@@ -1717,15 +2007,30 @@ _worker_run() {
         return 1
     fi
 
-    # every .out header in one pass : TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME
+    # every .out header in one pass : TAB_SIZE|FILE|MSTR_ID|SRC_OWNER|SRC_TABLE_NAME|TGT_OWNER|TGT_TABLE_NAME|CHUNK_NO|CONDITION
     _out_headers < ${TMP_LIST} > ${TMP_COLS}
 
+    if awk -F'|' '$8 != ""' ${TMP_COLS} | grep -q . && [[ "${LOG_CHUNK}" != "Y" ]] ; then
+        _fail "Chunk .out files but ${LOG_TAB} has no CHUNK_NO / CHUNK_COND column : ALTER TABLE ${LOG_TAB} ADD (CHUNK_NO NUMBER NULL, CHUNK_COND VARCHAR2(4000) NULL)"
+        RUN_RESULT="ERROR"
+        _run_footer RUN "${PHASE}" "${RUN_ID}" "${TOTAL}" "${RUN_START}"
+        return 1
+    fi
+
+    # one PENDING row per .out file (chunk file : CHUNK_NO / CHUNK_COND too)
     {
         _sql_head
         awk -F'|' -v q="'" -v tab="${LOG_TAB}" -v rid="${RUN_ID}" -v ph="${PHASE}" '
             function lit(s) { gsub(q, q q, s) ; return q s q }
-            { printf "INSERT INTO %s (MSTR_ID, RUN_ID, SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME, MIG_TYPE, STATUS) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);\n",
-                     tab, lit($3), rid, lit($4), lit($5), lit($6), lit($7), lit(ph), lit("PENDING") }' ${TMP_COLS}
+            {
+                cond = "" ; for (i = 9 ; i <= NF ; i++) cond = cond (i > 9 ? "|" : "") $i
+                if ($8 == "")
+                    printf "INSERT INTO %s (MSTR_ID, RUN_ID, SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME, MIG_TYPE, STATUS) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);\n",
+                           tab, lit($3), rid, lit($4), lit($5), lit($6), lit($7), lit(ph), lit("PENDING")
+                else
+                    printf "INSERT INTO %s (MSTR_ID, RUN_ID, SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME, MIG_TYPE, CHUNK_NO, CHUNK_COND, STATUS) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);\n",
+                           tab, lit($3), rid, lit($4), lit($5), lit($6), lit($7), lit(ph), $8, lit(cond), lit("PENDING")
+            }' ${TMP_COLS}
         echo "COMMIT;"
         echo "EXIT;"
     } > ${TMP_SQL}
@@ -1737,7 +2042,7 @@ _worker_run() {
         _run_footer RUN "${PHASE}" "${RUN_ID}" "${TOTAL}" "${RUN_START}"
         return 1
     fi
-    _ok "${TOTAL} table(s) registered as PENDING"
+    _ok "${TOTAL} SQL file(s) registered as PENDING (chunk files : $(awk -F'|' '$8 != ""' ${TMP_COLS} | wc -l | tr -d ' '))"
 
     # queue : the header list in run order, TAB_SIZE (.out header) small first
     sort -t'|' -k1,1n -k2,2 ${TMP_COLS} > ${TMP_RUN}
@@ -1751,7 +2056,7 @@ _worker_run() {
 _worker_retry() {
     local PHASE="$1" RUN_ID="$2"
     local OUT_DIR="${CMD_DIR}/${PHASE}"
-    local TOTAL RUN_START _t SO ST TO TT _err F _sz
+    local TOTAL RUN_START _t SO ST TO TT CN _err F _sz
 
     RUN_START=$(date +%s) ; RUN_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -1779,12 +2084,13 @@ EOF
     fi
 
     # queue (same format as a run) : a missing SQL file gets TAB_SIZE 0 and is regenerated in its slot
-    while IFS='|' read -r _t SO ST TO TT _err ; do
-        F="${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}")"
+    while IFS='|' read -r _t SO ST TO TT CN _err ; do
+        CN=$(printf "%s" "${CN}" | tr -d '[:space:]')
+        F="${OUT_DIR}/$(_out_name "${TO}" "${TT}" "${SO}" "${ST}" "${CN}")"
         _sz=0
         [[ -f "${F}" ]] && _sz=$(_hdr TAB_SIZE "${F}")
         [[ "${_sz}" =~ ^[0-9.]+$ ]] || _sz=0
-        printf "%s|%s|%s|%s|%s|%s|%s\n" "${_sz}" "${F}" "${MSTR_ID}" "${SO}" "${ST}" "${TO}" "${TT}"
+        printf "%s|%s|%s|%s|%s|%s|%s|%s|\n" "${_sz}" "${F}" "${MSTR_ID}" "${SO}" "${ST}" "${TO}" "${TT}" "${CN}"
     done < ${TMP_LIST} | sort -t'|' -k1,1n -k2,2 > ${TMP_RUN}
 
     _dispatch "${PHASE}" "${RUN_ID}" "${TMP_RUN}" "${TOTAL}" "${RUN_START}"
@@ -1838,6 +2144,7 @@ if [[ "$1" == "--worker" ]] ; then
     exec 1>/dev/null
     COLOR_ON=""
     _hint_load
+    _log_chunk_check      # DBM_XDN_LOG.CHUNK_NO / CHUNK_COND for chunk files (without them : whole table rows as before)
     SUCC_CNT=0 ; FAIL_CNT=0 ; FAIL_LIST="" ; SKIP_CNT=0 ; SKIP_LIST="" ; STOPPED="N" ; W_DONE="N" ; RUN_RESULT=""
 
     trap '' HUP INT
@@ -1880,6 +2187,8 @@ _check_objects() {
         echo "SELECT 'CHK|COL_MAP|' || COUNT(*) FROM ${MAP_TAB} WHERE ROWNUM = 1;"
         echo "SELECT 'CHK|XDN_LOG|' || COUNT(*) FROM ${LOG_TAB} WHERE ROWNUM = 1;"
         echo "SELECT 'CHK|DICT|'    || COUNT(*) FROM ALL_TAB_COLUMNS WHERE ROWNUM = 1;"
+        echo "SELECT 'CHK|PRECOL|'  || COUNT(${PRE_COND_COL}) FROM ${MSTR_TAB} WHERE ROWNUM = 1;"
+        echo "SELECT 'CHK|DDAYCOL|' || COUNT(${DDAY_COND_COL}) FROM ${MSTR_TAB} WHERE ROWNUM = 1;"
         echo "EXIT;"
     } > ${TMP_SQL}
     _run_sql ${TMP_SQL}
@@ -1889,10 +2198,14 @@ _check_objects() {
         OBJ_WARN="control table check failed : ${_err:-no output from ${DB_CLIENT}}"
         return 1
     fi
-    for _o in "MSTR:${MSTR_TAB}" "COL_MAP:${MAP_TAB} (needed for TRANS_YN=Y)" "XDN_LOG:${LOG_TAB}" "DICT:ALL_TAB_COLUMNS (needed for TRANS_YN=Y)" ; do
+    for _o in "MSTR:${MSTR_TAB}" "COL_MAP:${MAP_TAB} (needed for TRANS_YN=Y)" "XDN_LOG:${LOG_TAB}" "DICT:ALL_TAB_COLUMNS (needed for TRANS_YN=Y)" \
+              "PRECOL:${MSTR_TAB}.${PRE_COND_COL} (MIG.env PRE_COND_COL)" "DDAYCOL:${MSTR_TAB}.${DDAY_COND_COL} (MIG.env DDAY_COND_COL)" ; do
         _tag="${_o%%:*}"
         grep -q "^CHK|${_tag}|" ${TMP_OUT} || _miss="${_miss:+${_miss}, }${_o#*:}"
     done
+    if ! _log_chunk_check && [[ "${SPLIT_UNIT}" != "NONE" ]] ; then
+        _miss="${_miss:+${_miss}, }${LOG_TAB}.CHUNK_NO / CHUNK_COND (needed for SPLIT_UNIT=${SPLIT_UNIT})"
+    fi
     [[ -n "${_miss}" ]] && OBJ_WARN="not found or no privilege : ${_miss}"
     return 0
 }
@@ -1938,21 +2251,42 @@ _menu_status_line() {
 # _run_menu : [R] Run sub menu ; one action then back to the main menu ([b] = back without action)
 #   key without Enter, screen cleared on every draw, result kept until a key is pressed
 #   returns 1 when stdin is closed (main menu ends too)
+# _pre_step <action text> : PRE is migrated in two steps -> PRE_PHASE = PRE1 (PRE1~PRE2) / PRE2 (PRE2~PRE3)
+#   one key, [b] or anything else returns 1 (back to the run menu without an action)
+_pre_step() {
+    {
+        printf "%s\n" "$DASH"
+        printf " %s : which PRE step ?\n" "$1"
+        printf "  [1] 1st step   %s >= PRE1 < PRE2   (cmd/PRE1 : %s file(s))\n" "${PRE_COND_COL}" "$(_out_cnt PRE1)"
+        printf "  [2] 2nd step   %s >= PRE2 < PRE3   (cmd/PRE2 : %s file(s))\n" "${PRE_COND_COL}" "$(_out_cnt PRE2)"
+        printf "  [b] Back\n"
+        printf "%s\n" "$DASH"
+    } | _paint_menu
+    printf "PRE step: "
+    _key || return 1
+    case "${KEY}" in
+        1) PRE_PHASE="PRE1" ; return 0 ;;
+        2) PRE_PHASE="PRE2" ; return 0 ;;
+        *) _say "[OK]   cancelled" ; return 1 ;;
+    esac
+}
+
 _run_menu() {
     local _msg=""
     while true ; do
         _clear
         {
             printf "%s\n" "$SEP"
-            printf " RUN MENU   MSTR_ID=%s\n" "${MSTR_ID}"
+            printf " RUN MENU   MSTR_ID=%s  SPLIT=%s  SQL_REFRESH=%s\n" "${MSTR_ID}" "${SPLIT_TEXT}" "${SQL_REFRESH}"
+            printf " CONDITION  %s\n" "${COND_TEXT}"
             printf "%s\n" "$DASH"
             _menu_status_line
             printf "%s\n" "$SEP"
-            printf " [PRE]\n"
-            printf "  [1] Generate PRE  SQL      (cmd/PRE  : %s file(s))\n" "$(_out_cnt PRE)"
+            printf " [PRE]  1st : PRE1 ~ PRE2   2nd : PRE2 ~ PRE3   (step is asked after the key)\n"
+            printf "  [1] Generate PRE  SQL      (cmd/PRE1 : %s file(s) , cmd/PRE2 : %s file(s))\n" "$(_out_cnt PRE1)" "$(_out_cnt PRE2)"
             printf "  [2] Run      PRE  migration   (background)\n"
             printf "  [3] Retry    PRE  FAILED      (background)\n"
-            printf " [DDAY]\n"
+            printf " [DDAY]  condition column : %s ~   /  no condition column : whole table\n" "PRE3"
             printf "  [4] Generate DDAY SQL      (cmd/DDAY : %s file(s))\n" "$(_out_cnt DDAY)"
             printf "  [5] Run      DDAY migration   (background)\n"
             printf "  [6] Retry    DDAY FAILED      (background)\n"
@@ -1965,9 +2299,9 @@ _run_menu() {
         _msg=""
 
         case "${KEY}" in
-            1)   _busy_phase PRE  || _generate PRE ;;
-            2)   _busy            || _menu_run PRE ;;
-            3)   _busy            || _menu_retry PRE ;;
+            1)   _pre_step "Generate PRE SQL" && { _busy_phase "${PRE_PHASE}" || _generate "${PRE_PHASE}" ; } ;;
+            2)   _pre_step "Run PRE migration" && { _busy || _menu_run "${PRE_PHASE}" ; } ;;
+            3)   _pre_step "Retry PRE FAILED" && { _busy || _menu_retry "${PRE_PHASE}" ; } ;;
             4)   _busy_phase DDAY || _generate DDAY ;;
             5)   _busy            || _menu_run DDAY ;;
             6)   _busy            || _menu_retry DDAY ;;
@@ -1990,7 +2324,7 @@ while true ; do
     _clear
     {
         printf "%s\n" "$SEP"
-        printf " DATA MIGRATION   MSTR_ID=%s  DB_TYPE=%s  SRC_DBLINK=%s  SQL_REFRESH=%s\n" "${MSTR_ID}" "${DB_TYPE}" "${SRC_DBLINK}" "${SQL_REFRESH}"
+        printf " DATA MIGRATION   MSTR_ID=%s  DB_TYPE=%s  SRC_DBLINK=%s  SQL_REFRESH=%s  SPLIT=%s\n" "${MSTR_ID}" "${DB_TYPE}" "${SRC_DBLINK}" "${SQL_REFRESH}" "${SPLIT_TEXT}"
         printf "%s\n" "$DASH"
         _menu_status_line
         [[ -n "${OBJ_WARN}" ]] && printf " ! CHECK   : %s  (checked at menu start)\n" "${OBJ_WARN}"

@@ -19,7 +19,7 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 | | `MIG_HINT.conf` | PARALLEL 차수 ([h] Hint 에서 저장) |
 | 산출물 | `./cmd/PRE`, `./cmd/DDAY` | 이관 SQL (`.out`) |
 | | `./log` | 02 통합 로그(`MIG_TOTAL.log`) / 실행별 진행 로그 / 상세 로그 |
-| | `${BASE_PATH}/log`, `${BASE_PATH}/tmp` | 01 / 03 적재 로그, 임시 파일 |
+| | `${MIG_HOME}/tmp` | 임시 SQL / DB 출력 (01 / 02 / 03 공용) |
 | | `${MIG_HOME}/run` | 백그라운드 worker 실행용 임시 sh (worker 종료 시 삭제) |
 | 샘플 | `DBM_MIG_MSTR_sample.csv`, `DBM_MIG_COL_MAP_sample.csv` | CSV 양식 |
 
@@ -32,8 +32,10 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 | MSTR_ID | 이관할 DBM_MIG_MSTR.MSTR_ID (여러 테이블이 공유하는 기준 ID) |
 | SRC_DBLINK | 소스 DB LINK 명. `DBM_MIG_MSTR.SRC`(ASIS) 는 라벨일 뿐 SQL 에 쓰지 않음 |
 | HEARTBEAT_SEC | 한 테이블 이관 중 진행 로그에 Running 줄을 남기는 간격 (기본 300초) |
-| BASE_PATH | 01 / 03 로그, 임시 파일 경로 |
-| MIG_HOME | worker 실행용 임시 sh 를 만들 기준 경로 (`${MIG_HOME}/run`). 비우면 스크립트 디렉토리 |
+| MIG_HOME | **01 / 02 / 03 공통 작업 경로** 하나. 비우면 스크립트 디렉토리. 아래에 `cmd`(이관 SQL) / `log`(로그) / `tmp`(임시 파일) / `run`(worker 임시 sh) 를 자동 생성한다 (`MIG_HINT.conf` 는 스크립트 옆에 유지) |
+| SQL_REFRESH | `Y` : 이관 / 재수행 시 테이블 실행 직전 SQL 재생성 (6장), `N` / 미설정(기본) : `.out` 그대로 |
+| SPLIT_UNIT / SPLIT_SIZE | 날짜 조건 분할 단위 `DAY` / `MONTH` / `YEAR` 와 간격(기본 1). `NONE` / 미설정(기본) : 테이블당 SQL 1개 (5장 "날짜 조건 분할") |
+| PRE_COND_COL / DDAY_COND_COL | 단계별로 **조건 컬럼명을 담은 `DBM_MIG_MSTR` 컬럼** (기본 둘 다 `COL_CONDITION`). 예 : MSTR 에 `COL_CONDITION2` 를 추가하고 `DDAY_COND_COL=COL_CONDITION2` |
 
 사전 점검 : 02 메뉴를 띄울 때 `DBADM.DBM_MIG_MSTR` / `DBADM.DBM_MIG_COL_MAP` / `DBADM.DBM_XDN_LOG` / `ALL_TAB_COLUMNS` 를 하나씩 조회해, 없거나 권한이 없는 객체를 메뉴 상단에 `! CHECK` 로 표시한다 (알림만, 차단 없음, 테이블 생성 후 메뉴를 다시 띄우면 갱신).
 
@@ -65,16 +67,19 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 
 1. `DBM_MIG_MSTR` 에서 `MSTR_ID = MIG.env 의 MSTR_ID` 이고 `MIG_YN = 'Y'` 인 행을 대상으로 한다.
 2. 테이블명 / OWNER 변경은 `SRC_OWNER.SRC_TABLE_NAME` → `TGT_OWNER.TGT_TABLE_NAME` 으로 표현한다.
-3. COND + DDAY 는 없으므로 마이그레이션은 **PRE / DDAY 2단계**로 한다.
+3. 마이그레이션은 **PRE 1차 / PRE 2차 / DDAY 3단계**로 한다. 대상 판정은 **조건 컬럼(COL_CONDITION) 유무**로 한다 (MIG_TYPE / MIG_FULL 은 참고용이며 판정에 쓰지 않는다).
 
-| MIG_TYPE | MIG_FULL | PRE 단계 | DDAY 단계 |
+| 대상 | PRE 1차 | PRE 2차 | DDAY |
 |---|---|---|---|
-| PRE | COND | `COL_CONDITION >= 'PRE1' AND COL_CONDITION < 'PRE2'` | `COL_CONDITION >= 'PRE3'` (나머지 데이터) |
-| DDAY | FULL | 대상 아님 | 조건 없이 전체 이관 |
-| 그 외 (INIT, PRE+FULL 등) | | 대상 아님 (제외 건수만 표시) | 대상 아님 |
+| 조건 컬럼 있음 | `{조건컬럼} >= 'PRE1' AND {조건컬럼} < 'PRE2'` | `{조건컬럼} >= 'PRE2' AND {조건컬럼} < 'PRE3'` | `{조건컬럼} >= 'PRE3'` (나머지 전부) |
+| 조건 컬럼 없음 | 대상 아님 | 대상 아님 | 조건 없이 전체 이관 |
 
-- MIG_TYPE / MIG_FULL 은 값이 **정확히** `PRE` / `DDAY` / `COND` / `FULL` 일 때만 규칙이 적용된다 (대소문자 구분).
+- 1차는 `PRE1` / `PRE2`, 2차는 `PRE2` / `PRE3`, DDAY 는 `PRE3` 값이 있어야 대상이 된다. 비어 있으면 그 단계에서 제외된다.
+- 조건 컬럼이 있는 테이블은 **1차 → 2차 → DDAY 세 번** 이관되고, 세 구간이 이어져 전체 데이터를 덮는다.
+- `DBM_XDN_LOG.MIG_TYPE` 에는 단계 값 `PRE1` / `PRE2` / `DDAY` 를 기록한다. 산출물도 `cmd/PRE1`, `cmd/PRE2`, `cmd/DDAY` 로 나뉜다.
 - PRE1 / PRE2 / PRE3 은 항상 따옴표로 감싸 비교한다.
+- 조건 컬럼명은 `MIG.env` `PRE_COND_COL` / `DDAY_COND_COL` 이 가리키는 **MSTR 컬럼의 값**을 쓴다 (기본 둘 다 `COL_CONDITION`). 단계마다 다른 컬럼을 쓰려면 MSTR 에 컬럼을 추가하고 env 에서 지정한다. 없는 컬럼을 지정하면 메뉴 상단 `! CHECK` 로 표시된다.
+- 비교 연산자는 **고정**이다 : 하한 `>=`, 상한 `<`. 1차 / 2차 / DDAY 가 `PRE2`, `PRE3` 에서 맞물리므로, 다른 조합을 쓰면 경계값이 두 번 적재되거나 빠진다.
 
 ### TRANS_YN
 | TRANS_YN | 이관 SQL |
@@ -120,11 +125,11 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 ============================================================
  RUN MENU   MSTR_ID=20260914
 ============================================================
- [PRE]
-  [1] Generate PRE  SQL      (cmd/PRE  : n file(s))
+ [PRE]  1차 : PRE1 ~ PRE2   2차 : PRE2 ~ PRE3   (키 입력 후 차수를 묻는다)
+  [1] Generate PRE  SQL      (cmd/PRE1 : n file(s) , cmd/PRE2 : n file(s))
   [2] Run      PRE  migration   (background)
   [3] Retry    PRE  FAILED      (background)
- [DDAY]
+ [DDAY]  조건 컬럼 있음 : PRE3 ~   /  없음 : 전체
   [4] Generate DDAY SQL      (cmd/DDAY : n file(s))
   [5] Run      DDAY migration   (background)
   [6] Retry    DDAY FAILED      (background)
@@ -133,15 +138,17 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 ============================================================
 ```
 
-[1단계 : PRE 이관 SQL 작성] — [R] → [1]
-- MIG_TYPE : PRE + MIG_FULL : COND 테이블에 대해 `./cmd/PRE` 아래 SQL 작성
+`[1]` / `[2]` / `[3]` 을 누르면 차수를 한 번 더 묻는다 (`[1]` 1차 / `[2]` 2차 / `[b]` 취소).
 
-[2단계 : PRE 이관] — [R] → [2] / 재수행 [R] → [3]
-- `./cmd/PRE` 아래 `.out` 전부를 기반으로 이관 수행
+[1단계 : PRE 1차 SQL 작성 / 이관] — [R] → [1] → [1] , [R] → [2] → [1] (재수행 [3] → [1])
+- 조건 컬럼이 있는 테이블에 대해 `PRE1 ~ PRE2` 구간 SQL 을 `./cmd/PRE1` 아래에 작성하고 이관한다
 
-[3단계 : DDAY 이관 SQL 작성] — [R] → [4]
-- PRE + COND 테이블 : `COL_CONDITION >= PRE3` 조건으로 나머지 데이터 SQL 작성
-- DDAY + FULL 테이블 : 조건 없는 전체 이관 SQL 작성
+[2단계 : PRE 2차] — [R] → [1] → [2] , [R] → [2] → [2] (재수행 [3] → [2])
+- 같은 테이블의 `PRE2 ~ PRE3` 구간을 `./cmd/PRE2` 아래에 작성하고 이관한다
+
+[3단계 : DDAY SQL 작성] — [R] → [4]
+- 조건 컬럼이 있는 테이블 : `{조건컬럼} >= PRE3` 조건으로 나머지 데이터 SQL 작성
+- 조건 컬럼이 없는 테이블 : 조건 없는 전체 이관 SQL 작성
 
 [4단계 : DDAY 이관] — [R] → [5] / 재수행 [R] → [6]
 - `./cmd/DDAY` 아래 `.out` 전부를 기반으로 이관 수행
@@ -179,6 +186,29 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
      `TRANS_YN = 'N'` 만 있으면 `DBM_MIG_COL_MAP` 이 없어도 작성된다. 실패 메시지에는 실제로 실패한 조회의 객체명을 표시한다.
 8. 작성 로그 : `./log/GEN_{PHASE}_{MSTR_ID}_{시각}.log`. 확인(y) 후 작성한 결과는 통합 로그(`MIG_TOTAL.log`)에 `[GEN]` 블록(시작 / 파일별 한 줄 / `[END]`)으로도 남긴다. 미리보기 후 취소는 통합 로그에 남기지 않는다.
 
+### 날짜 조건 분할 (`MIG.env` `SPLIT_UNIT`)
+- 기본(`SPLIT_UNIT=NONE` / 미설정)은 테이블당 `.out` 1개로 기존과 같다.
+- `SPLIT_UNIT=DAY|MONTH|YEAR`, `SPLIT_SIZE=n` 이면 SQL 작성([1] / [4]) 시 날짜 조건을 **청크 파일**로 나눈다.
+
+| 단계 | 원래 조건 | 청크 |
+|---|---|---|
+| PRE | `COL >= 'PRE1' AND COL < 'PRE2'` | `[PRE1, b1)`, `[b1, b2)` … `[bk, PRE2)` |
+| DDAY (PRE+COND) | `COL >= 'PRE3'` | `[PRE3, b1)` … `[bk, 열린 구간)` : 작성일(오늘)까지 나누고 마지막 청크는 상한 없음 (미래 / 이상값 누락 없음) |
+| DDAY (DDAY+FULL) | 조건 없음 | 분할 안 함 |
+
+- 경계값 `b1, b2 …` 는 달력 기준 다음 일 / 월 / 년 시작 + `SPLIT_SIZE` (예 : `20250115` 부터 MONTH 1 → `20250201`, `20250301` …).
+- 청크 경계도 단계 조건과 같이 `>= b` / `< b` 로 만들어 겹침 / 누락이 없게 한다 (DDAY 마지막 청크만 상한 없음).
+- **날짜 형식은 PRE 값 모양으로 자동 판별**하고 같은 형식으로 경계값을 쓴다 : 숫자만 바꾸고 구분자는 그대로
+  (`20250101`, `2025-01-01`, `2025/01/01`, `202501`, `2025`, `20250101000000`, `2025-01-01 00:00:00` 등).
+  - VARCHAR 컬럼 : 같은 형식의 문자열 비교로 잘린다.
+  - DATE 컬럼 : 기존과 같이 문자 리터럴 비교(묵시적 변환, 세션 NLS 형식 기준).
+- 나누지 않고 테이블 1개 파일로 두는 경우 (미리보기에 `[WARN] not split` + 사유) : 날짜 값이 아님, PRE2 형식이 PRE1 과 다름, 단위보다 거친 형식(예 : `202501` 을 DAY 로), PRE1 >= PRE2, COL_CONDITION 없음, 청크 1개뿐, 10000 개 초과.
+- 파일명 : `{TGT_OWNER}_{TGT_TABLE_NAME}__{SRC_OWNER}_{SRC_TABLE_NAME}__C0001.out` …, 헤더에 `CHUNK_NO`, `CHUNK`(n/총수, 단위, 범위), `CHUNK_FROM`, `CHUNK_TO`(빈 값 = 열린 구간), `BASE_COND`(분할 전 조건) 추가. `CONDITION` 은 청크 조건.
+- 이력 : `DBM_XDN_LOG` 에 **청크마다 1행** (`CHUNK_NO`, `CHUNK_COND`). 컬럼이 없으면 청크 작성 / 이관을 막고 `ALTER TABLE ... ADD` 를 안내한다 (분할을 안 쓰면 컬럼 불필요).
+- 실행 : 청크도 하나의 작업 단위로 WORKER 슬롯에서 실행하며, **같은 테이블의 청크도 동시에** 돈다. 이를 위해 청크는 `INSERT /*+ NOAPPEND */` + `SELECT /*+ PARALLEL(n) */`, `ENABLE PARALLEL DML` 없이 실행한다 (APPEND / 병렬 DML 은 테이블 잠금). 일반 INSERT 라 redo / undo 가 늘 수 있다.
+- 재수행 : 실패한 **청크만** 다시 실행한다 (같은 청크 행 갱신).
+- `SQL_REFRESH=Y` : 청크 범위는 파일 헤더 값을 유지하고 컬럼 목록 등만 다시 만든다. `DBM_MIG_MSTR` 의 조건(COL_CONDITION / PRE 값)이 바뀌었거나 청크 파일이 없으면 실행하지 않고 FAIL (`generate SQL again`). 분할 구성(청크 수 / 범위)은 SQL 작성에서만 정해진다.
+
 ---
 
 ## 6. 이관 실행 ([R] → [2] / [5])
@@ -191,6 +221,8 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
      `nohup bash <임시 sh>` 로 실행하며, 임시 sh 는 `exec bash 02.RUN_MIG.sh --worker ...` 로 worker 를 띄운다.
      인터프리터(bash)를 명시해 실행하므로 `02.RUN_MIG.sh` / 임시 sh 에 실행권한(+x)이 없어도 된다.
    - 임시 sh 는 worker 가 끝나면(정상 / 오류 / 중지) 삭제한다. 다시 실행하면 같은 데이터가 중복 적재되므로 수동으로 실행하지 않는다.
+   - worker 는 **새 세션(setsid, 없으면 perl / python 의 setsid)** 으로 띄운다. 같은 프로세스 그룹에 있으면 터미널 Ctrl+C(SIGINT)가 worker 의 `sqlplus` / `tbsql` 까지 전달되어 **실행 중이던 INSERT 가 취소(ORA-01013)** 되기 때문이다 (nohup 은 SIGHUP 만 막는다). 임시 sh 는 `trap '' INT HUP` 도 걸어 둔다.
+   - 셋 다 없는 서버에서는 기존처럼 같은 그룹에서 실행되며, 시작 메시지와 로그 헤더(`SESSION=`)에 경고를 표시한다. 이때는 `[l]` 에서 Ctrl+C 를 누르지 말고 `q` + Enter 로 나간다.
 2. 백그라운드 이관은 **한 번에 하나만** 실행한다. 실행 중에는 [R] 의 이관 / 재수행([2] / [3] / [5] / [6])이 막히고, 실행 중인 단계의 SQL 작성도 막힌다.
    - 실행 여부는 **실제 worker 프로세스(`ps`)** 로 판단하고 `./log/.run.lock` 은 보조로 쓴다. worker 는 시작 시 자기 PID 를 락에 기록한다.
    - 상태 확인은 락을 **지우지 않는다**. worker 가 살아 있는데 락이 없거나 PID 가 다르면 프로세스 기준으로 락을 다시 쓰고 메뉴에 `warning` 을 표시한다.
@@ -238,6 +270,7 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
    - `WORKER_DEGREE` : 동시에 이관할 테이블 수 (1 ~ 99, 기본 1)
    - `PARALLEL_DEGREE` : 테이블마다의 PARALLEL 차수 (기본 4, `1` 이면 `APPEND` 만 넣고 병렬 / PARALLEL DML 은 쓰지 않음)
 4. 실제 실행 SQL(힌트 포함)은 `_detail.log` 에 남긴다.
+   - 청크 파일(5장 "날짜 조건 분할")은 `INSERT /*+ NOAPPEND */`, `SELECT /*+ PARALLEL(n) */`, PARALLEL DML 없이 실행한다.
 5. **실행 중 변경도 바로 적용**한다 : WORKER 는 1초 안에 슬롯 수에 반영되고, PARALLEL 은 **다음에 시작하는 테이블부터** 적용된다(이미 돌고 있는 테이블은 시작할 때의 값 유지). 설정 파일은 임시 파일로 쓴 뒤 교체한다.
 
 ---
@@ -256,8 +289,9 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 마이그레이션 시작 전 ([R] → [2] / [5], 백그라운드 시작 시)
 1. RUN_ID 는 1번부터 채번한다 (`MAX(RUN_ID) + 1`). 테이블마다의 값이 아닌 **실행 한 번(테이블 전체)의 값**이다.
 2. MSTR_ID, SRC_OWNER, SRC_TABLE_NAME, TGT_OWNER, TGT_TABLE_NAME 을 기록한다.
-3. MIG_TYPE 에는 **단계 값(PRE / DDAY)** 을 기록한다 (PRE 테이블의 나머지 이관은 DDAY 로 기록되어 1차 / 2차 구분 가능).
+3. MIG_TYPE 에는 **단계 값(PRE1 / PRE2 / DDAY)** 을 기록한다 (같은 테이블이 세 단계로 나뉘어 기록된다).
 4. STATUS 에 `PENDING` 을 기록한다.
+5. 청크 파일은 청크마다 1행이며 `CHUNK_NO`, `CHUNK_COND`(청크 조건)를 함께 기록한다. 테이블 단위 행은 NULL.
 
 각 테이블 마이그레이션 시작 시
 1. STATUS 에 `RUNNING` 기록
@@ -368,6 +402,7 @@ Oracle / Tibero 이기종 환경을 고려해 **일반 SQL 만** 사용한다 (�
 
 ### 모니터링 메뉴
 - **[l] Total Log** : 통합 로그(`MIG_TOTAL.log`)를 `tail -F` 로 보여준다. 실행 중이면 해당 실행의 개별 로그 경로도 함께 표시한다. **`q` + Enter 로만** 메뉴로 돌아오며(Ctrl+C 무시) tail 프로세스를 종료한다.
+  - worker 를 새 세션으로 띄우므로 이 화면에서 Ctrl+C 를 눌러도 이관은 취소되지 않는다 (6장). 예전 방식으로 띄워 둔 worker 나 setsid 계열이 없는 서버에서는 Ctrl+C 가 DB 클라이언트까지 전달되어 INSERT 가 취소될 수 있다.
 - **[s] Status** : 실행 중(없으면 최근) RUN_ID 의 PENDING / RUNNING / SUCCESS / FAIL 건수, 진행률, 실행 중 테이블과 경과 시간, FAIL 상위 10건을 DBM_XDN_LOG 에서 조회한다.
 - **[S] Stop** : 새 테이블을 더 시작하지 않고, 돌고 있는 테이블은 끝까지 진행한다 (stop 파일 방식). 시작하지 않은 테이블은 PENDING 으로 남는다.
 - 메뉴 상단에 실행 상태를 항상 표시한다.

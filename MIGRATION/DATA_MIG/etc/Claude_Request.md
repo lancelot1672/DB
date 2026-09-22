@@ -139,3 +139,64 @@
   - N : `.out` 그대로 실행, 재수행 시 파일 없으면 FAIL, SKIP 없음 / Y : 14번 동작
   - worker 시작 시 값으로 고정, 메뉴 상단 / [2][3] 미리보기 / 로그 헤더에 `SQL_REFRESH=` 표시
   - `MIG.env.example`, `MIG_RUN_PLAN.md` 반영
+
+### 16. README 작성 후 Notion 정리
+- 요청 : readme 만들어서 노션에 정리해
+- 결정 : Notion `Saturday` 페이지 하위 `MIG_TOOL` / README 1페이지 + 하위 문서 / 저장소에도 `README.md` 생성
+- 응답 : `DATA_MIG/README.md` 작성 (개요, 구성, 준비/MIG.env, 작업 흐름, 이관 규칙, 메뉴, SQL_REFRESH, 로그, 주의사항)
+  - Notion (notion-saturday 연동) : `Saturday > MIG_TOOL` (README) + 하위 `MIG_RUN_PLAN (이관 실행 사양)`, `COL_MAP_PLAN (컬럼 매핑)`, `DDL (제어 테이블)`
+  - notion-saturday MCP 가 00.Develop 프로젝트 전용이라 user scope 로 복사 등록
+
+### 17. 날짜 조건을 MIG.env 단위로 잘라 작업 단위 구성 (기본은 현행)
+- 요청 : 조건 데이터가 날짜 기준이면 (VARCHAR 일 수도 있음) MIG.env 대로 잘라서 작업 단위를 구성해 마이그레이션 가능한가? Default 는 현행
+- 결정 : 청크마다 .out + DBM_XDN_LOG 행(CHUNK_NO, CHUNK_COND) / SPLIT_UNIT(DAY|MONTH|YEAR)+SPLIT_SIZE, 형식 자동 판별 / DDAY 는 오늘까지 + 마지막 열린 구간 / 같은 테이블 청크도 병렬 (APPEND 제외)
+- 응답 : `02.RUN_MIG.sh`
+  - `_split_units` (awk, 프로시저 없음) : PRE 값 모양으로 형식 판별, 달력 경계값을 같은 형식으로 생성, 분할 불가 사유는 [WARN]
+  - Generate : 청크 파일 `{TGT}__{SRC}__C0001.out` + 헤더 CHUNK_NO / CHUNK / CHUNK_FROM / CHUNK_TO / BASE_COND
+  - 이관 / 재수행 / Status / Unlock : 청크 단위 로그 행, 실패 청크만 재수행, 청크는 NOAPPEND + PARALLEL DML 없음
+  - SQL_REFRESH=Y : 청크 범위 유지, MSTR 조건이 바뀌면 FAIL(다시 작성 안내)
+  - `_log_chunk_check` : CHUNK 컬럼 없으면 청크 작성 / 이관 차단 + ALTER 안내 (분할 안 쓰면 영향 없음)
+  - `DDL_Script/DBM_XDN_LOG.sql`, `MIG.env.example`, `MIG_RUN_PLAN.md`, `README.md` 반영
+
+### 18. 단계별 조건 컬럼 / 비교 연산자를 MIG.env 에서 설정
+- 요청 : PRE 와 DDAY 가 어떤 컬럼 조건을 사용할지 MIG.env 에서 설정 가능? PRE1 / PRE2 / PRE3 이상·미만(`<` `>` `<=` `>=`) 설정 가능?
+- 결정 : 조건 컬럼은 MSTR 컬럼이름 지정 방식 / 연산자는 MIG.env 전역 / 청크 경계는 양 끝만 설정 연산자
+- 응답 : `MIG.env` `PRE_COND_COL`, `DDAY_COND_COL`(기본 `COL_CONDITION`), `PRE1_OP`, `PRE2_OP`, `PRE3_OP`(기본 `>=`, `<`, `>=`)
+  - `_phase_cond` 가 단계별 조건 컬럼 / 연산자로 WHERE 를 만들고, 분할은 양 끝 경계만 설정 연산자 사용(사이는 `>=` / `<`)
+  - 잘못된 값은 기본값, 없는 MSTR 컬럼이면 메뉴 상단 `! CHECK` 표시, SQL 작성 미리보기 / GEN 로그 / RUN 메뉴에 조건 설정 표시
+  - 연산자는 `PRE1_OP='>='` 처럼 따옴표로 써야 함(env 는 쉘이 읽음). 따옴표 실수 대비로 `GE` / `GT` / `LE` / `LT` 표기도 허용
+
+### 19. [l] Total Log 에서 Ctrl+C 누르면 이관이 취소되는 문제
+- 요청 : l 통해서 tail -f 로 로그 보다가 ctrl+c 하면 이관하던 게 취소됨, 확인 요청 (증상 : 테이블이 ORA-01013 으로 FAIL)
+- 원인 : Ctrl+C 는 터미널 foreground 프로세스 그룹 전체에 SIGINT 를 보냄. nohup 은 SIGHUP 만 막으므로 worker 와 그 sqlplus / tbsql 이 같은 그룹에 있어 DB 클라이언트가 실행 중 INSERT 를 취소 (쉘의 `trap '' INT` 는 DB 클라이언트가 자체 핸들러를 걸어 무력화됨)
+- 결정 : worker 를 새 세션으로 분리
+- 응답 : `_launch` 가 launcher sh 에 `trap '' INT HUP` 을 넣고 `setsid`(없으면 perl / python 의 setsid)로 worker 실행
+  - 시작 메시지에 `sess : new session (...)`, 로그 헤더에 `SESSION=` 표시, 셋 다 없으면 경고 표시
+  - `[l]` 안내 문구에 Ctrl+C 무시 표기, `MIG_RUN_PLAN.md` 6 / 10장, `README.md` 반영
+
+### 20. PRE 를 1차 / 2차로 분리하고 조건 대상은 1달씩 분할
+- 요청 : PRE 를 1차(PRE1 이상 PRE2 미만) / 2차(PRE2 이상 PRE3 미만)로 나누고 DDAY 는 PRE3 이상. COL_CONDITION 있는 대상은 1달씩 쪼개서 INSERT/COMMIT
+- 결정 : 메뉴는 PRE 안에서 1차/2차 선택 / MIG_TYPE = PRE1·PRE2·DDAY / SPLIT_UNIT 기본값만 MONTH / 대상 판정은 COL_CONDITION 유무
+- 응답 : `_phase_cond` 를 PRE1 / PRE2 / DDAY 3단계로 재구성 (MIG_TYPE·MIG_FULL 대신 조건 컬럼 유무로 판정)
+  - `_pre_step` : [1][2][3] 선택 후 차수를 한 번 더 묻고 cmd/PRE1 · cmd/PRE2 로 분리
+  - `_split_units` 가 단계별 구간(1차 PRE1~PRE2, 2차 PRE2~PRE3, DDAY PRE3~오늘+열린 구간)을 1달 단위로 분할
+  - `MIG.env` SPLIT_UNIT 기본값 MONTH, PRE1_OP = 1·2차 하한 / PRE2_OP = 상한 / PRE3_OP = DDAY 하한
+  - `MIG_RUN_PLAN.md` 3 / 4 / 9장, `README.md`, `CLAUDE.md`(PRE1~3 의미) 반영
+
+### 21. MIG.env 의 PRE1_OP ~ PRE3_OP 제거
+- 요청 : MIG.env 에 PRE1_OP ~ PRE3_OP 는 없어도 될 것 같지 않아?
+- 이유 : 1차 / 2차 / DDAY 가 PRE2, PRE3 에서 맞물리므로 연산자를 바꾸면 경계값이 중복 적재되거나 누락됨 (18번에서 추가했던 옵션)
+- 응답 : env 옵션과 `_env_op` 제거, 내부 상수로 고정 (`COND_LOW_OP='>='`, `COND_UP_OP='<'`)
+  - `_phase_cond` / `_split_units` / 미리보기 / 차수 선택 화면 / 헤더 주석에서 연산자 표기를 고정 값으로 변경
+  - 조건 컬럼 지정(`PRE_COND_COL` / `DDAY_COND_COL`)은 그대로 유지
+  - `MIG.env.example`, `MIG_RUN_PLAN.md`, `README.md` 반영
+
+### 22. BASE_PATH 와 MIG_HOME 통합
+- 요청 : BASE_PATH 와 MIG_HOME 차이가 헷갈리니 통합
+- 결정 : 이름은 `MIG_HOME` 하나로, `cmd` / `log` / `tmp` / `run` 전부 그 아래로
+- 응답 : `BASE_PATH` 제거, `MIG_HOME`(비우면 스크립트 디렉토리) 기준으로 통일
+  - `02.RUN_MIG.sh` : CMD_DIR / LOG_DIR / TMP_DIR / RUN_DIR 을 `${MIG_HOME}` 하위로 (MIG_HINT.conf 는 스크립트 옆 유지)
+  - `01.LOAD_MIG_MSTR.sh` / `03.LOAD_COL_MAP.sh` : 적재 로그·임시 파일도 `${MIG_HOME}/log`, `${MIG_HOME}/tmp`
+  - 기존 `BASE_PATH` 아래 로그 / 임시 파일은 이동하지 않으므로 필요하면 수동 정리
+  - `MIG.env.example`, `MIG_RUN_PLAN.md`, `README.md` 반영
+  - `MIG.env.example`, `MIG_RUN_PLAN.md`, `README.md` 반영

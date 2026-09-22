@@ -57,9 +57,11 @@ UPPER_COLS="SRC_OWNER SRC_TABLE_NAME TGT_OWNER TGT_TABLE_NAME TGT_COL SRC_COL MA
 
 SEP="============================================================"
 
-mkdir -p "${BASE_PATH}/log" "${BASE_PATH}/tmp"
+# MIG_HOME (MIG.env, default = script directory) : ${MIG_HOME}/log (load log) , ${MIG_HOME}/tmp (temp SQL)
+MIG_HOME="${MIG_HOME:-${SCRIPT_DIR}}"
+mkdir -p "${MIG_HOME}/log" "${MIG_HOME}/tmp"
 
-TMP_PREFIX="${BASE_PATH}/tmp/LOAD_COL_MAP"
+TMP_PREFIX="${MIG_HOME}/tmp/LOAD_COL_MAP"
 TMP_CSV="${TMP_PREFIX}_CSV_$$.csv"
 TMP_BODY="${TMP_PREFIX}_BODY_$$.sql"
 TMP_PAIRS="${TMP_PREFIX}_PAIRS_$$.lst"
@@ -68,7 +70,7 @@ TMP_SQL="${TMP_PREFIX}_SQL_$$.sql"
 TMP_OUT="${TMP_PREFIX}_OUT_$$.txt"
 
 # --- Log File ---
-LOGFILE="${BASE_PATH}/log/LOAD_COL_MAP_$(date '+%Y%m%d_%H%M%S').log"
+LOGFILE="${MIG_HOME}/log/LOAD_COL_MAP_$(date '+%Y%m%d_%H%M%S').log"
 
 # _out: Print to terminal and append to log file
 _out() {
