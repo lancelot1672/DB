@@ -1,0 +1,4 @@
+# run output when BASE_PATH is empty (= this directory). CSV / bad files hold real data.
+csv/
+ctl/
+bad/
