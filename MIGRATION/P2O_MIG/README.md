@@ -19,8 +19,20 @@ sql/*.sql --선택--> 01.UNLOAD_PG.sh --> csv/<SQL파일명>.csv --선택 + 대�
 | `02.LOAD_TARGET.sh` (TIBERO) | `tbsql`, `tbloader` |
 
 ```bash
-cp P2O.env.example P2O.env    # 접속 정보·옵션 입력 (gitignore 대상)
+cp P2O.env.example P2O.env    # 접속 정보(호스트/DB/TNS)·옵션 입력 (gitignore 대상)
 ```
+
+계정·비밀번호는 `P2O.env` 에 두지 않는다. 각 스크립트가 시작할 때 입력받고(비밀번호는 화면에 표시 안 됨),
+바로 접속을 확인해 실패하면 종료한다.
+
+비밀번호는 `ps` 에 보이지 않도록 명령행 인자로 넘기지 않는다.
+
+| 명령 | 전달 방식 |
+|------|-----------|
+| `psql` | 환경변수 `PGPASSWORD` |
+| `sqlplus` / `tbsql` | 로그인 없이 시작(`/nolog`) 후 표준입력으로 `CONNECT` |
+| `sqlldr` | 권한 600 임시 parfile(`userid=`), 적재 직후 삭제 |
+| `tbloader` | **예외** — userid 를 명령행으로만 받으므로 적재 중에는 `ps` 에 보인다 |
 
 ## 2. 추출 SQL 작성 규칙 (`sql/*.sql`)
 
@@ -40,14 +52,15 @@ cp P2O.env.example P2O.env    # 접속 정보·옵션 입력 (gitignore 대상)
 ## 3. 실행
 
 ```bash
-./01.UNLOAD_PG.sh      # SQL 선택 → 미리보기 → y/N → csv/<SQL파일명>.csv
-./02.LOAD_TARGET.sh    # CSV 선택 → OWNER / TABLE_NAME 입력 → 미리보기 → y/N → 적재
+./01.UNLOAD_PG.sh      # PG 계정/비밀번호 → SQL 선택 → 미리보기 → y/N → csv/<SQL파일명>.csv
+./02.LOAD_TARGET.sh    # 대상 계정/비밀번호 → CSV 선택 → OWNER / TABLE_NAME 입력 → 미리보기 → y/N → 적재
 ```
 
 목록 선택: `↑`/`↓`(또는 `k`/`j`) 이동, `Enter` 선택, `q` 취소.
 
-`02` 는 적재 전 CSV 건수·현재 건수·컬럼 매핑을 보여주고, 적재 후 건수를 다시 세어
-`기대 건수(APPEND = 기존 + CSV, TRUNCATE = CSV)` 와 다르거나 bad 행이 있으면 `[FAIL]` 로 끝난다.
+`02` 는 적재 전 CSV 건수·현재 건수·컬럼 매핑을 보여준다. 적재 후에는 로더 log 의 적재/거부 건수와
+`count(*)` 를 함께 보여주고, `기대 건수(APPEND = 기존 + CSV, TRUNCATE = CSV)` 와 다르거나
+bad 행이 있으면 `[FAIL]` 로 끝난다. (tbloader log 문구는 버전마다 달라 못 읽으면 `?` 로 표시)
 
 ## 4. 산출물 (`${BASE_PATH}`, 비우면 스크립트 디렉토리)
 

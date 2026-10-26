@@ -39,8 +39,10 @@
 | `02.LOAD_TARGET.sh` | CSV 선택 → 대상 테이블 입력 → 적재 |
 | `README.md` | 사용법·SQL 작성 규칙·예시 |
 
-`P2O.env` 주요 항목: `PG_HOST/PG_PORT/PG_DB/PG_USER/PG_PASS`, `DB_USER/DB_PASS/DB_TNS`,
+`P2O.env` 주요 항목: `PG_HOST/PG_PORT/PG_DB`, `DB_TNS`,
 `TARGET_DBMS`(`ORACLE`|`TIBERO`), `BASE_PATH`, `LOAD_MODE`(`APPEND`|`TRUNCATE`), `DIRECT`(`Y`|`N`), `LOAD_ERRORS`, `CHARSET`
+
+계정·비밀번호는 env 에 두지 않고 스크립트 시작 시 대화형으로 입력받는다(`_ask_login`, 비밀번호는 `read -s`).
 
 디렉토리: `${BASE_PATH}/csv`, `/ctl`, `/log`, `/bad`, `/tmp`
 
@@ -59,8 +61,15 @@
 - `read -rsn1` + ESC 시퀀스 처리, 선택 행 반전 표시(순수 bash, 외부 도구 불필요)
 - 목록이 비어 있으면 안내 후 종료
 
+### 공통: 계정 입력 `_ask_login`
+- 계정·비밀번호를 빈 값이 아닐 때까지 입력받는다. 비밀번호는 화면·로그에 남기지 않는다
+- 입력 직후 접속 확인(PG `SELECT 1`, 대상 `SELECT ... FROM DUAL`), 실패하면 즉시 종료
+- 비밀번호는 명령행 인자(`ps` 노출)로 넘기지 않는다: `psql` 은 `PGPASSWORD`, `sqlplus`/`tbsql` 은
+  로그인 없이 시작 후 표준입력 `CONNECT`, `sqlldr` 은 권한 600 tmp parfile.
+  `tbloader` 는 userid 를 명령행으로만 받으므로 예외(적재 중 `ps` 노출)
+
 ### 01.UNLOAD_PG.sh
-1. env 로딩, `psql` 존재 점검
+1. env 로딩, `psql` 존재 점검, PG 계정·비밀번호 입력 및 접속 확인
 2. `${SCRIPT_DIR}/sql/*.sql` 목록을 메뉴로 표시 → 파일 선택
 3. 선택한 SQL 내용 미리보기, 끝의 `;` 제거, SELECT/WITH 로 시작하는지 확인
 4. `COPY (<SQL>) TO STDOUT WITH (FORMAT csv, HEADER, DELIMITER ',', QUOTE '"', NULL '')` 를
@@ -70,7 +79,8 @@
    (`COPY ... TO STDOUT` 은 `COPY n` 태그를 출력하지 않으므로 CSV 를 따옴표 짝 기준으로 세어 건수를 구한다)
 
 ### 02.LOAD_TARGET.sh
-1. env 로딩, `TARGET_DBMS` 에 따라 `sqlplus`+`sqlldr` / `tbsql`+`tbloader` 존재 점검
+1. env 로딩, `TARGET_DBMS` 에 따라 `sqlplus`+`sqlldr` / `tbsql`+`tbloader` 존재 점검,
+   대상 계정·비밀번호 입력 및 접속 확인
 2. `${BASE_PATH}/csv/*.csv` 목록을 메뉴로 표시 → 파일 선택
 3. 대상 테이블 대화형 입력: `OWNER`, `TABLE_NAME` (대문자 변환, 빈 값이면 재입력)
 4. 딕셔너리(`ALL_TAB_COLUMNS`)로 테이블 존재·컬럼 타입 조회

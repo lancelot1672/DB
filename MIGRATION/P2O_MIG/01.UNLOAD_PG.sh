@@ -7,6 +7,7 @@
 #     (client side file : no file privilege needed on the PG server)
 #   - 1st CSV line = column aliases of the SQL (= target column names, used by 02.LOAD_TARGET.sh)
 #   - the SQL is run as it is : WHERE condition / date format are written in the SQL file
+#   - PG account / password are typed in at start (not kept in P2O.env)
 # Usage: 01.UNLOAD_PG.sh
 # ============================================================
 
@@ -24,7 +25,7 @@ if ! command -v psql > /dev/null 2>&1 ; then
     exit 1
 fi
 
-for V in PG_HOST PG_PORT PG_DB PG_USER ; do
+for V in PG_HOST PG_PORT PG_DB ; do
     if [[ -z "${!V}" ]] ; then
         echo "[FAIL] ${V} is empty in P2O.env"
         exit 1
@@ -111,6 +112,46 @@ _select_menu() {
     MENU_VAL="${items[cur]}"
     return 0
 }
+
+# _ask_login <LABEL> : read account and password (password not echoed) until not empty
+#   -> LOGIN_USER / LOGIN_PASS ; return 1 = cancelled (EOF)
+_ask_login() {
+    while true ; do
+        read -r -p "$1 user     : " LOGIN_USER || { echo ; return 1 ; }
+        LOGIN_USER=$(echo "${LOGIN_USER}" | tr -d '[:space:]')
+        [[ -n "${LOGIN_USER}" ]] && break
+        echo "  -> empty. Try again."
+    done
+    while true ; do
+        IFS= read -r -s -p "$1 password : " LOGIN_PASS || { echo ; return 1 ; }
+        echo
+        [[ -n "${LOGIN_PASS}" ]] && break
+        echo "  -> empty. Try again."
+    done
+    return 0
+}
+
+# ============================================================
+# 0. Source login
+# ============================================================
+_out "%s\n" "$SEP"
+_log "Source login : ${PG_HOST}:${PG_PORT}/${PG_DB}"
+_out "%s\n" "$SEP"
+
+_ask_login "PG" || { _log "Cancelled." ; exit 0 ; }
+PG_USER="${LOGIN_USER}"
+PG_PASS="${LOGIN_PASS}"
+
+PGPASSWORD="${PG_PASS}" \
+psql -X -q -t -v ON_ERROR_STOP=1 \
+     -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DB}" \
+     -c "SELECT 1" > /dev/null 2> ${TMP_ERR}
+if [[ $? -ne 0 ]] ; then
+    _out "%s\n" "$(cat ${TMP_ERR})"
+    _fail "Cannot connect to PostgreSQL as ${PG_USER}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+    exit 1
+fi
+_ok "Connected : ${PG_USER}@${PG_HOST}:${PG_PORT}/${PG_DB}"
 
 # ============================================================
 # 1. Select extract SQL

@@ -8,6 +8,8 @@
 #   - DATE / TIMESTAMP target columns : fixed masks (DATE_MASK / TS_MASK below)
 #   - loader by TARGET_DBMS in P2O.env (ORACLE = sqlplus + sqlldr, TIBERO = tbsql + tbloader)
 #   - no validation in shell : rejected rows go to the loader bad file
+#   - target account / password are typed in at start (not kept in P2O.env)
+#   - result : loaded / rejected rows from the loader log + COUNT(*) before / after
 # Usage: 02.LOAD_TARGET.sh
 # ============================================================
 
@@ -20,9 +22,10 @@ else
     exit 1
 fi
 
+# DB_NOLOG : start the client without login (CONNECT is sent on stdin, see _run_sql)
 case "${TARGET_DBMS}" in
-    ORACLE) DB_CLIENT="sqlplus" ; LOADER="sqlldr"   ; CHARSET="${CHARSET:-AL32UTF8}" ;;
-    TIBERO) DB_CLIENT="tbsql"   ; LOADER="tbloader" ; CHARSET="${CHARSET:-UTF8}" ;;
+    ORACLE) DB_CLIENT="sqlplus" ; DB_NOLOG="/nolog" ; LOADER="sqlldr"   ; CHARSET="${CHARSET:-AL32UTF8}" ;;
+    TIBERO) DB_CLIENT="tbsql"   ; DB_NOLOG=""       ; LOADER="tbloader" ; CHARSET="${CHARSET:-UTF8}" ;;
     *)      echo "[FAIL] TARGET_DBMS must be ORACLE or TIBERO in P2O.env (current: '${TARGET_DBMS}')" ; exit 1 ;;
 esac
 
@@ -42,8 +45,6 @@ esac
 DIRECT="${DIRECT:-N}"
 LOAD_ERRORS="${LOAD_ERRORS:-50}"
 
-DB_CONN="${DB_USER}/${DB_PASS}${DB_TNS:+@${DB_TNS}}"
-
 # masks of the date strings in the CSV (keep in sync with the to_char() rule in README.md)
 DATE_MASK="YYYYMMDDHH24MISS"
 TS_MASK="YYYYMMDDHH24MISSFF6"
@@ -61,6 +62,8 @@ TMP_OUT="${TMP_PREFIX}_OUT_$$.txt"
 TMP_COLS="${TMP_PREFIX}_COLS_$$.txt"
 TMP_FIELDS="${TMP_PREFIX}_FIELDS_$$.txt"
 TMP_MAP="${TMP_PREFIX}_MAP_$$.txt"
+# sqlldr parfile holding userid (mode 600, removed right after the load and in _cleanup)
+TMP_PAR="${TMP_PREFIX}_PAR_$$.par"
 
 # --- Log File ---
 RUN_TS=$(date '+%Y%m%d_%H%M%S')
@@ -77,19 +80,24 @@ _ok()   { _out "[OK]   %s\n" "$*"; }
 _fail() { _out "[FAIL] %s\n" "$*"; }
 
 _cleanup() {
-    rm -f ${TMP_SQL} ${TMP_OUT} ${TMP_COLS} ${TMP_FIELDS} ${TMP_MAP}
+    rm -f ${TMP_SQL} ${TMP_OUT} ${TMP_COLS} ${TMP_FIELDS} ${TMP_MAP} ${TMP_PAR}
     printf '\033[?25h'
 }
 trap _cleanup EXIT
 
 # _run_sql <SQL_FILE> : run with the client for TARGET_DBMS (stdout + stderr)
+#   the password is not put on the command line (visible in ps) : CONNECT goes on stdin
+#   (echo is a shell builtin), and an echoed CONNECT line is dropped from the output
 _run_sql() {
-    ${DB_CLIENT} -s "${DB_CONN}" @"$1" < /dev/null 2>&1
+    { echo "CONNECT ${DB_CONN}" ; cat "$1" ; } \
+      | ${DB_CLIENT} -s ${DB_NOLOG} 2>&1 \
+      | P2O_PW="${DB_PASS}" awk '!(toupper($0) ~ /CONN/ && index($0, ENVIRON["P2O_PW"]))'
+    return ${PIPESTATUS[1]}
 }
 
-# _has_db_error <OUTPUT_FILE> : Oracle / Tibero / SQL*Plus error code in output
+# _has_db_error <OUTPUT_FILE> : Oracle / Tibero / SQL*Plus / tbSQL error code in output
 _has_db_error() {
-    grep -Eq '(ORA|TBR|SP2)-[0-9]+' "$1"
+    grep -Eq '(ORA|TBR|TBS|SP2)-[0-9]+' "$1"
 }
 
 # _count_target : print COUNT(*) of the target table (empty on error)
@@ -164,6 +172,58 @@ _ask_name() {
         echo "  -> letters, digits, _ \$ # only, starting with a letter. Try again."
     done
 }
+
+# _ask_login <LABEL> : read account and password (password not echoed) until not empty
+#   -> LOGIN_USER / LOGIN_PASS ; return 1 = cancelled (EOF)
+_ask_login() {
+    while true ; do
+        read -r -p "$1 user     : " LOGIN_USER || { echo ; return 1 ; }
+        LOGIN_USER=$(echo "${LOGIN_USER}" | tr -d '[:space:]')
+        [[ -n "${LOGIN_USER}" ]] && break
+        echo "  -> empty. Try again."
+    done
+    while true ; do
+        IFS= read -r -s -p "$1 password : " LOGIN_PASS || { echo ; return 1 ; }
+        echo
+        [[ -n "${LOGIN_PASS}" ]] && break
+        echo "  -> empty. Try again."
+    done
+    return 0
+}
+
+# _ldr_count <ERE> : first number in the first loader log match of ERE (empty = not found)
+_ldr_count() {
+    [[ -f "${LDR_LOG}" ]] || return 0
+    grep -Eio "$1" "${LDR_LOG}" | head -n 1 | grep -Eo '[0-9]+' | head -n 1
+}
+
+# ============================================================
+# 0. Target login
+# ============================================================
+_out "%s\n" "$SEP"
+_log "Target login : ${TARGET_DBMS}${DB_TNS:+ (${DB_TNS})}"
+_out "%s\n" "$SEP"
+
+_ask_login "${TARGET_DBMS}" || { _log "Cancelled." ; exit 0 ; }
+DB_USER="${LOGIN_USER}"
+DB_PASS="${LOGIN_PASS}"
+DB_CONN="${DB_USER}/${DB_PASS}${DB_TNS:+@${DB_TNS}}"
+
+{
+    echo "SET HEADING OFF"
+    echo "SET FEEDBACK OFF"
+    echo "SET PAGESIZE 0"
+    echo "SELECT 'LOGIN|OK' FROM DUAL;"
+    echo "EXIT"
+} > ${TMP_SQL}
+
+_run_sql ${TMP_SQL} > ${TMP_OUT}
+if [[ $? -ne 0 ]] || _has_db_error ${TMP_OUT} || ! grep -q 'LOGIN|OK' ${TMP_OUT} ; then
+    _out "%s\n" "$(cat ${TMP_OUT})"
+    _fail "Cannot connect to ${TARGET_DBMS} as ${DB_USER}${DB_TNS:+@${DB_TNS}}"
+    exit 1
+fi
+_ok "Connected : ${DB_USER}${DB_TNS:+@${DB_TNS}}"
 
 # ============================================================
 # 1. Select CSV file
@@ -364,10 +424,14 @@ START_TS=$(date '+%s')
 
 if [[ "${TARGET_DBMS}" == "ORACLE" ]] ; then
     [[ "${DIRECT}" == "Y" ]] && DIRECT_OPT="true" || DIRECT_OPT="false"
-    sqlldr userid="${DB_CONN}" control="${CTL_FILE}" log="${LDR_LOG}" bad="${BAD_FILE}" \
+    # userid in a parfile, not on the command line (visible in ps)
+    ( umask 077 ; echo "userid=${DB_CONN}" > ${TMP_PAR} )
+    sqlldr parfile="${TMP_PAR}" control="${CTL_FILE}" log="${LDR_LOG}" bad="${BAD_FILE}" \
            skip=1 errors=${LOAD_ERRORS} direct=${DIRECT_OPT} silent=header,feedback 2>&1 | tee -a ${LOGFILE}
     RC=${PIPESTATUS[0]}
+    rm -f ${TMP_PAR}
 else
+    # tbloader takes userid on the command line only (no parfile) : the password is visible in ps while it runs
     tbloader userid="${DB_CONN}" control="${CTL_FILE}" log="${LDR_LOG}" bad="${BAD_FILE}" \
              errors=${LOAD_ERRORS} direct=${DIRECT} 2>&1 | tee -a ${LOGFILE}
     RC=${PIPESTATUS[0]}
@@ -391,9 +455,22 @@ if [[ -s "${BAD_FILE}" ]] ; then
     BAD_ROWS=$(awk '{ q += gsub(/"/, "&") ; if (q % 2 == 0) r++ } END { print r + 0 }' "${BAD_FILE}")
 fi
 
+# loaded / rejected rows from the loader log
+#   sqlldr   : "  10 Rows successfully loaded." / "  0 Rows not loaded due to data errors."
+#   tbloader : "5 Rows were loaded successfully." / "3 Rows were failed to load because of some errors"
+if [[ "${TARGET_DBMS}" == "ORACLE" ]] ; then
+    LDR_LOADED=$(_ldr_count '[0-9]+[[:space:]]+Rows? successfully loaded')
+    LDR_REJECTED=$(_ldr_count '[0-9]+[[:space:]]+Rows? not loaded due to data errors')
+else
+    LDR_LOADED=$(_ldr_count '[0-9]+[[:space:]]+Rows? were loaded successfully')
+    LDR_REJECTED=$(_ldr_count '[0-9]+[[:space:]]+Rows? were failed to load')
+fi
+
 _out "\n"
 _out "%s\n" "$SEP"
 _out "  Loader rc    : %s\n" "${RC}"
+_out "  Loaded rows  : %s (loader log)\n" "${LDR_LOADED:-?}"
+_out "  Rejected rows: %s (loader log)\n" "${LDR_REJECTED:-?}"
 _out "  CSV rows     : %s\n" "${CSV_ROWS}"
 _out "  Rows before  : %s\n" "${CNT_BEFORE}"
 _out "  Rows after   : %s (expected %s)\n" "${CNT_AFTER:-?}" "${EXPECT_CNT}"

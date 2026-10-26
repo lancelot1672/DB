@@ -20,6 +20,7 @@ DB 마이그레이션 관련된 ToolKit Repository 이다.
 | 디렉토리 | 유형 | 용도 |
 |-----|------|---------|
 | `MIGRATION/` | shell | 번호순 파이프라인(`01.` → `03.`). 소유자별 제어 테이블 생성 후 메타데이터 / 제약조건 / 인덱스 DDL 추출. |
+| `MIGRATION/P2O_MIG/` | shell | PostgreSQL → Oracle/Tibero 데이터 이관. `01.UNLOAD_PG.sh`(`sql/*.sql` 선택 → `psql COPY` → CSV), `02.LOAD_TARGET.sh`(CSV 선택 → 대상 테이블 입력 → `sqlldr`/`tbloader`). 제어 테이블 미사용. 사양은 `plan/plan.md`. |
 | `CANADA/` | shell + sql | "CANADA" 대상용 변형 마이그레이션 스크립트(제어 테이블 생성, 조건부 EXPDP, DB 디렉토리 설정). |
 | `KZ_PROSYNC/` | shell | `impdp` 측: 리스트의 덤프 파일을 gunzip 후 import. |
 | `MIG_LIST/` | Streamlit | 테이블 목록 Excel 업로드 → 검증 → `INSERT INTO DBADM.MIG_TAB_LIST` SQL 생성. `Dockerfile` 포함. |
@@ -55,6 +56,10 @@ cd TIBERO && docker network create dong-network && docker compose up -d --build
 MIGRATION/01.CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE>   # LIST_FILE = 줄마다 "OWNER TABLE_NAME"
 MIGRATION/02.EXPDP_META_PARFILE.sh <OWNER>                 # DB 디렉토리를 대화식으로 입력받음
 MIGRATION/03.EXTRACT_INDEX.sh <OWNER>
+
+# P2O_MIG : 인자 없음, 모두 대화식 (계정/비밀번호 → 방향키 메뉴 선택 → y/N)
+MIGRATION/P2O_MIG/01.UNLOAD_PG.sh                         # psql 필요
+MIGRATION/P2O_MIG/02.LOAD_TARGET.sh                       # sqlplus+sqlldr 또는 tbsql+tbloader 필요
 ```
 
 이 저장소에는 테스트 스위트, 린터, CI 가 설정되어 있지 않다.
@@ -67,6 +72,10 @@ MIGRATION/03.EXTRACT_INDEX.sh <OWNER>
    (`MIGRATION/` 은 `MIG.env`, `CANADA/`·`KZ_PROSYNC/` 는 `.env`)을 source 하거나 없으면
    즉시 실패한다. 이 파일들은 **gitignore 대상**(`.gitignore` = `*.env`)이며 `DB_USER`,
    `DB_PASS`, `BASE_PATH` 를 제공한다. 자격증명을 하드코딩하지 말 것.
+   예외: `MIGRATION/P2O_MIG/` 는 `P2O.env` 를 쓰되 계정·비밀번호는 env 에 두지 않고 실행 시
+   `_ask_login`(비밀번호 `read -s`)으로 입력받은 뒤 바로 접속을 확인한다. env 는 호스트/DB/TNS·옵션만 담는다.
+   또한 비밀번호를 명령행 인자로 넘기지 않는다(`sqlplus`/`tbsql` = 표준입력 `CONNECT`, `sqlldr` = 600 parfile,
+   `psql` = `PGPASSWORD`). `tbloader` 만 명령행 userid 외 방법이 없어 예외.
 2. **로깅 헬퍼**: `_out()` 은 터미널에 출력하고 *동시에* `${BASE_PATH}/log/<SCRIPT>_<timestamp>.log`
    에 append 한다. `_log`/`_ok`/`_fail` 은 태그를 붙여 이를 감싼다.
 3. **임시 파일**: `${BASE_PATH}/tmp/..._$$.sql` (PID 접미사)에 작성하고 `_cleanup` 함수로 정리한다.
