@@ -20,8 +20,20 @@ else
     exit 1
 fi
 
+# --- Client environment (PG_HOME / PATH / LD_LIBRARY_PATH for psql) ---
+#   PG_ENV_FILE in P2O.env : relative = from the script directory , empty = current shell PATH
+if [[ -n "${PG_ENV_FILE}" ]] ; then
+    [[ "${PG_ENV_FILE}" != /* ]] && PG_ENV_FILE="${SCRIPT_DIR}/${PG_ENV_FILE}"
+    if [[ -f "${PG_ENV_FILE}" ]] ; then
+        . "${PG_ENV_FILE}"
+    else
+        echo "[FAIL] PG_ENV_FILE not found: ${PG_ENV_FILE} (cp env/PG.env.example env/PG.env)"
+        exit 1
+    fi
+fi
+
 if ! command -v psql > /dev/null 2>&1 ; then
-    echo "[FAIL] psql not found in PATH. Install the PostgreSQL client first."
+    echo "[FAIL] psql not found in PATH. Install the PostgreSQL client and check PG_ENV_FILE (${PG_ENV_FILE:-not set})."
     exit 1
 fi
 

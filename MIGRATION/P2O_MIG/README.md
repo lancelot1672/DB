@@ -19,8 +19,16 @@ sql/*.sql --선택--> 01.UNLOAD_PG.sh --> csv/<SQL파일명>.csv --선택 + 대�
 | `02.LOAD_TARGET.sh` (TIBERO) | `tbsql`, `tbloader` |
 
 ```bash
-cp P2O.env.example P2O.env    # 접속 정보(호스트/DB/TNS)·옵션 입력 (gitignore 대상)
+cp P2O.env.example P2O.env                # 접속 정보(호스트/DB/TNS)·옵션 입력 (gitignore 대상)
+cp env/PG.env.example     env/PG.env      # 01 : PG_HOME / PATH / LD_LIBRARY_PATH
+cp env/ORACLE.env.example env/ORACLE.env  # 02 (ORACLE) : ORACLE_HOME / PATH / LD_LIBRARY_PATH / NLS_LANG
+cp env/TIBERO.env.example env/TIBERO.env  # 02 (TIBERO) : TB_HOME / PATH / LD_LIBRARY_PATH / TB_NLS_LANG
 ```
+
+클라이언트 환경변수는 DBMS별 env 파일로 분리한다. `P2O.env` 의 `PG_ENV_FILE` / `ORACLE_ENV_FILE` /
+`TIBERO_ENV_FILE` 이 각 파일을 가리키며(상대경로 = 스크립트 디렉토리 기준), 스크립트가 클라이언트 점검 전에 source 한다.
+`01` 은 `PG_ENV_FILE`, `02` 는 `TARGET_DBMS` 에 맞는 파일 하나만 읽는다. 값을 비우면 현재 셸의 PATH 를 그대로 쓴다.
+지정했는데 파일이 없으면 즉시 실패한다.
 
 계정·비밀번호는 `P2O.env` 에 두지 않는다. 각 스크립트가 시작할 때 입력받고(비밀번호는 화면에 표시 안 됨),
 바로 접속을 확인해 실패하면 종료한다.

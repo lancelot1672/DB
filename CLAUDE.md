@@ -74,6 +74,9 @@ MIGRATION/P2O_MIG/02.LOAD_TARGET.sh                       # sqlplus+sqlldr 또�
    `DB_PASS`, `BASE_PATH` 를 제공한다. 자격증명을 하드코딩하지 말 것.
    예외: `MIGRATION/P2O_MIG/` 는 `P2O.env` 를 쓰되 계정·비밀번호는 env 에 두지 않고 실행 시
    `_ask_login`(비밀번호 `read -s`)으로 입력받은 뒤 바로 접속을 확인한다. env 는 호스트/DB/TNS·옵션만 담는다.
+   클라이언트 환경변수(`PG_HOME`/`ORACLE_HOME`/`TB_HOME`, `PATH`, `LD_LIBRARY_PATH`, NLS)는 `env/PG.env`,
+   `env/ORACLE.env`, `env/TIBERO.env` 로 분리하고 `P2O.env` 의 `*_ENV_FILE` 이 경로를 지정한다
+   (클라이언트 점검 전에 source, `02` 는 `TARGET_DBMS` 에 맞는 파일만).
    또한 비밀번호를 명령행 인자로 넘기지 않는다(`sqlplus`/`tbsql` = 표준입력 `CONNECT`, `sqlldr` = 600 parfile,
    `psql` = `PGPASSWORD`). `tbloader` 만 명령행 userid 외 방법이 없어 예외.
 2. **로깅 헬퍼**: `_out()` 은 터미널에 출력하고 *동시에* `${BASE_PATH}/log/<SCRIPT>_<timestamp>.log`

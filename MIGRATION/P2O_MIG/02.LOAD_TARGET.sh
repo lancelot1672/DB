@@ -23,15 +23,29 @@ else
 fi
 
 # DB_NOLOG : start the client without login (CONNECT is sent on stdin, see _run_sql)
+# CLIENT_ENV_VAR : P2O.env variable naming the client environment file for TARGET_DBMS
 case "${TARGET_DBMS}" in
-    ORACLE) DB_CLIENT="sqlplus" ; DB_NOLOG="/nolog" ; LOADER="sqlldr"   ; CHARSET="${CHARSET:-AL32UTF8}" ;;
-    TIBERO) DB_CLIENT="tbsql"   ; DB_NOLOG=""       ; LOADER="tbloader" ; CHARSET="${CHARSET:-UTF8}" ;;
+    ORACLE) DB_CLIENT="sqlplus" ; DB_NOLOG="/nolog" ; LOADER="sqlldr"   ; CHARSET="${CHARSET:-AL32UTF8}" ; CLIENT_ENV_VAR="ORACLE_ENV_FILE" ;;
+    TIBERO) DB_CLIENT="tbsql"   ; DB_NOLOG=""       ; LOADER="tbloader" ; CHARSET="${CHARSET:-UTF8}"     ; CLIENT_ENV_VAR="TIBERO_ENV_FILE" ;;
     *)      echo "[FAIL] TARGET_DBMS must be ORACLE or TIBERO in P2O.env (current: '${TARGET_DBMS}')" ; exit 1 ;;
 esac
 
+# --- Client environment (ORACLE_HOME / TB_HOME , PATH , LD_LIBRARY_PATH , NLS_LANG / TB_NLS_LANG) ---
+#   relative = from the script directory , empty = current shell PATH
+CLIENT_ENV="${!CLIENT_ENV_VAR}"
+if [[ -n "${CLIENT_ENV}" ]] ; then
+    [[ "${CLIENT_ENV}" != /* ]] && CLIENT_ENV="${SCRIPT_DIR}/${CLIENT_ENV}"
+    if [[ -f "${CLIENT_ENV}" ]] ; then
+        . "${CLIENT_ENV}"
+    else
+        echo "[FAIL] ${CLIENT_ENV_VAR} not found: ${CLIENT_ENV} (cp env/${TARGET_DBMS}.env.example env/${TARGET_DBMS}.env)"
+        exit 1
+    fi
+fi
+
 for C in ${DB_CLIENT} ${LOADER} ; do
     if ! command -v ${C} > /dev/null 2>&1 ; then
-        echo "[FAIL] ${C} not found in PATH (TARGET_DBMS=${TARGET_DBMS}). Install the ${TARGET_DBMS} client first."
+        echo "[FAIL] ${C} not found in PATH (TARGET_DBMS=${TARGET_DBMS}). Install the ${TARGET_DBMS} client and check ${CLIENT_ENV_VAR} (${CLIENT_ENV:-not set})."
         exit 1
     fi
 done

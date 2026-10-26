@@ -27,19 +27,23 @@
 - Tibero 대상: Tibero Client(`tbsql`, `tbloader`)
 - 실행 서버 → PG / 대상 DB 포트 방화벽 오픈
 
-각 스크립트는 시작 시 `command -v` 로 필요한 명령을 점검하고, 없으면 안내 후 즉시 실패한다.
+클라이언트 환경변수는 DBMS별 env 파일(`env/PG.env`, `env/ORACLE.env`, `env/TIBERO.env`)로 분리하고,
+`P2O.env` 의 `*_ENV_FILE` 이 경로를 지정한다(상대경로 = 스크립트 디렉토리, 비우면 현재 셸 PATH 사용).
+각 스크립트는 해당 env 파일을 source 한 뒤(`01` = PG, `02` = `TARGET_DBMS` 에 맞는 1개)
+`command -v` 로 필요한 명령을 점검하고, 파일이나 명령이 없으면 안내 후 즉시 실패한다.
 
 ## 4. 파일 구성
 
 | 파일 | 용도 |
 |------|------|
-| `P2O.env` (gitignore) / `P2O.env.example` | 접속 정보·경로·옵션 |
+| `P2O.env` (gitignore) / `P2O.env.example` | 접속 정보·경로·옵션, 클라이언트 env 파일 경로 |
+| `env/PG.env` / `env/ORACLE.env` / `env/TIBERO.env` (gitignore, `*.env.example` 템플릿) | 클라이언트 환경변수(`*_HOME`, `PATH`, `LD_LIBRARY_PATH`, `NLS_LANG`/`TB_NLS_LANG`) |
 | `sql/*.sql` | 추출 SQL (파일 1개 = SELECT 1개 = CSV 1개) |
 | `01.UNLOAD_PG.sh` | SQL 파일 선택 → PG → CSV |
 | `02.LOAD_TARGET.sh` | CSV 선택 → 대상 테이블 입력 → 적재 |
 | `README.md` | 사용법·SQL 작성 규칙·예시 |
 
-`P2O.env` 주요 항목: `PG_HOST/PG_PORT/PG_DB`, `DB_TNS`,
+`P2O.env` 주요 항목: `PG_ENV_FILE/ORACLE_ENV_FILE/TIBERO_ENV_FILE`, `PG_HOST/PG_PORT/PG_DB`, `DB_TNS`,
 `TARGET_DBMS`(`ORACLE`|`TIBERO`), `BASE_PATH`, `LOAD_MODE`(`APPEND`|`TRUNCATE`), `DIRECT`(`Y`|`N`), `LOAD_ERRORS`, `CHARSET`
 
 계정·비밀번호는 env 에 두지 않고 스크립트 시작 시 대화형으로 입력받는다(`_ask_login`, 비밀번호는 `read -s`).
@@ -105,7 +109,7 @@
 - **빈 문자열 / NULL**: Oracle·Tibero 는 `''` 를 NULL 로 취급 → PG 의 빈 문자열과 NULL 구분이 사라진다(NOT NULL 컬럼 거부 가능)
 - **데이터 내 개행**: CSV 따옴표로 감싸지지만 로더는 레코드 내 개행을 기본 처리하지 못함
   → 해당 컬럼은 SQL 에서 `replace()` 로 치환하거나, 레코드 구분자 변경을 구현 시 실데이터로 확인
-- **문자셋**: CSV 는 UTF8 고정, 로더 측 `CHARACTERSET` / `NLS_LANG`(`TB_NLS_LANG`) 을 env 로 지정
+- **문자셋**: CSV 는 UTF8 고정, 로더 측 `CHARACTERSET` 은 `P2O.env`, `NLS_LANG`(`TB_NLS_LANG`) 은 `env/ORACLE.env`(`env/TIBERO.env`) 에 지정
 - **LOB / bytea / json / 배열**: 1차 범위 제외
 - **대용량**: 1차는 SQL 1개 = 단일 파일. 분할·병렬은 범위 외
 
