@@ -3,3 +3,6 @@
 *.sh  text eol=lf
 *.py  text eol=lf
 *.sql text eol=lf
+# bash 가 source 하는 env 파일도 동일 (값 끝에 \r 이 붙으면 경로/명령을 못 찾는다)
+*.env         text eol=lf
+*.env.example text eol=lf
