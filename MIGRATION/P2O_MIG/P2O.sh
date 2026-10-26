@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# 00.P2O_MENU.sh
+# P2O.sh
 # P2O_MIG : PostgreSQL -> Oracle / Tibero data migration, one shell with a menu (Up / Down + Enter).
 #
 #   Menu
@@ -16,10 +16,22 @@
 #   Settings are written back to P2O.env / env/*.env in place (KEY=VALUE line replaced, comments kept).
 #   Account / password are always typed in, never saved, never put on a command line (except tbloader).
 #
-# Usage: 00.P2O_MENU.sh            menu
-#        00.P2O_MENU.sh unload     run the unload module only
-#        00.P2O_MENU.sh load       run the load module only
+# Usage: P2O.sh            menu
+#        P2O.sh unload     run the unload module only
+#        P2O.sh load       run the load module only
+#   (bash script : "sh P2O.sh" is run again with bash)
 # ============================================================
+
+# --- bash only ---
+# "sh P2O.sh" = dash / ksh, or bash in POSIX mode (no process substitution, ...) : run again with bash
+# (plain sh syntax here : this block must parse in any sh)
+if [ -z "${BASH_VERSION}" ] || case ":${SHELLOPTS}:" in *:posix:*) true ;; *) false ;; esac ; then
+    if [ -n "${P2O_REEXEC}" ] || ! command -v bash > /dev/null 2>&1 ; then
+        echo "[FAIL] run with bash : bash $0" >&2
+        exit 1
+    fi
+    P2O_REEXEC=1 exec bash +o posix "$0" "$@"
+fi
 
 # --- Load environment variables ---
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -924,7 +936,8 @@ _load_run() {
     fi
 
     N_CHUNK=${#CHUNK_FILES[@]}
-    mapfile -t CHUNK_ROWS < <(_rows_per_file "${CHUNK_FILES[@]}")
+    # numbers only : word splitting of the output is safe (no process substitution)
+    CHUNK_ROWS=( $(_rows_per_file "${CHUNK_FILES[@]}") )
     CSV_ROWS=0
     for R in "${CHUNK_ROWS[@]}" ; do CSV_ROWS=$(( CSV_ROWS + R )) ; done
 
@@ -1415,8 +1428,8 @@ _screen_outputs() {
 
         logs=()
         while IFS= read -r f ; do
-            logs+=("${f}")
-        done < <(ls -t "${base}"/log/*.log 2>/dev/null | head -n 15)
+            [[ -n "${f}" ]] && logs+=("${f}")
+        done <<< "$(ls -t "${base}"/log/*.log 2>/dev/null | head -n 15)"
         items=()
         for f in "${logs[@]}" ; do
             items+=("view log : $(basename "${f}")")

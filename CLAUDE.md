@@ -20,7 +20,7 @@ DB 마이그레이션 관련된 ToolKit Repository 이다.
 | 디렉토리 | 유형 | 용도 |
 |-----|------|---------|
 | `MIGRATION/` | shell | 번호순 파이프라인(`01.` → `03.`). 소유자별 제어 테이블 생성 후 메타데이터 / 제약조건 / 인덱스 DDL 추출. |
-| `MIGRATION/P2O_MIG/` | shell | PostgreSQL → Oracle/Tibero 데이터 이관. 쉘은 `00.P2O_MENU.sh` 하나: 메뉴(Source/Target/옵션 설정을 `P2O.env`·`env/*.env` 에 직접 수정, 접속 테스트, 산출물 조회) + Unload 모듈(`sql/*.sql` 선택 → `psql COPY` → CSV) + Load 모듈(CSV 선택 → 대상 테이블 입력 → `sqlldr`/`tbloader`). 모듈은 서브셸에서 실행(`exit`·클라이언트 env 가 메뉴에 남지 않음). 행 수 기준 청크(`UNLOAD_CHUNK_ROWS`/`LOAD_CHUNK_ROWS`, 청크별 검증·재개) 지원. 제어 테이블 미사용. 사양은 `plan/plan.md`. |
+| `MIGRATION/P2O_MIG/` | shell | PostgreSQL → Oracle/Tibero 데이터 이관. 쉘은 `P2O.sh` 하나: 메뉴(Source/Target/옵션 설정을 `P2O.env`·`env/*.env` 에 직접 수정, 접속 테스트, 산출물 조회) + Unload 모듈(`sql/*.sql` 선택 → `psql COPY` → CSV) + Load 모듈(CSV 선택 → 대상 테이블 입력 → `sqlldr`/`tbloader`). 모듈은 서브셸에서 실행(`exit`·클라이언트 env 가 메뉴에 남지 않음). 행 수 기준 청크(`UNLOAD_CHUNK_ROWS`/`LOAD_CHUNK_ROWS`, 청크별 검증·재개) 지원. 제어 테이블 미사용. 사양은 `plan/plan.md`. |
 | `CANADA/` | shell + sql | "CANADA" 대상용 변형 마이그레이션 스크립트(제어 테이블 생성, 조건부 EXPDP, DB 디렉토리 설정). |
 | `KZ_PROSYNC/` | shell | `impdp` 측: 리스트의 덤프 파일을 gunzip 후 import. |
 | `MIG_LIST/` | Streamlit | 테이블 목록 Excel 업로드 → 검증 → `INSERT INTO DBADM.MIG_TAB_LIST` SQL 생성. `Dockerfile` 포함. |
@@ -58,9 +58,9 @@ MIGRATION/02.EXPDP_META_PARFILE.sh <OWNER>                 # DB 디렉토리를 
 MIGRATION/03.EXTRACT_INDEX.sh <OWNER>
 
 # P2O_MIG : 인자 없음, 모두 대화식 (계정/비밀번호 → 방향키 메뉴 선택 → y/N)
-MIGRATION/P2O_MIG/00.P2O_MENU.sh                          # 메뉴 (설정 관리 + Unload / Load)
-MIGRATION/P2O_MIG/00.P2O_MENU.sh unload                   # 메뉴 없이 Unload 모듈만 (psql 필요)
-MIGRATION/P2O_MIG/00.P2O_MENU.sh load                     # 메뉴 없이 Load 모듈만 (sqlplus+sqlldr 또는 tbsql+tbloader)
+MIGRATION/P2O_MIG/P2O.sh                          # 메뉴 (설정 관리 + Unload / Load)
+MIGRATION/P2O_MIG/P2O.sh unload                   # 메뉴 없이 Unload 모듈만 (psql 필요)
+MIGRATION/P2O_MIG/P2O.sh load                     # 메뉴 없이 Load 모듈만 (sqlplus+sqlldr 또는 tbsql+tbloader)
 ```
 
 이 저장소에는 테스트 스위트, 린터, CI 가 설정되어 있지 않다.

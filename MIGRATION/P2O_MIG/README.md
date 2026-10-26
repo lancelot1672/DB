@@ -4,7 +4,7 @@
 대상 테이블을 입력받아 Oracle(`sqlldr`) / Tibero(`tbloader`) 에 적재한다.
 설계는 [`plan/plan.md`](plan/plan.md) 참조.
 
-쉘은 `00.P2O_MENU.sh` 하나다. 설정 관리 화면과 Unload / Load 모듈이 한 파일에 들어 있다.
+쉘은 `P2O.sh` 하나다. 설정 관리 화면과 Unload / Load 모듈이 한 파일에 들어 있다.
 
 ```
 sql/*.sql --선택--> [Unload 모듈] --> csv/<SQL파일명>.csv (또는 청크 디렉토리)
@@ -67,9 +67,9 @@ Unload 는 `PG_ENV_FILE`, Load 는 `TARGET_DBMS` 에 맞는 파일 하나만 읽
 ## 3. 실행
 
 ```bash
-./00.P2O_MENU.sh           # 메뉴 (P2O.env 가 없으면 P2O.env.example 로 생성할지 묻는다)
-./00.P2O_MENU.sh unload    # 메뉴 없이 Unload 모듈만 실행
-./00.P2O_MENU.sh load      # 메뉴 없이 Load 모듈만 실행
+./P2O.sh           # 메뉴 (P2O.env 가 없으면 P2O.env.example 로 생성할지 묻는다)
+./P2O.sh unload    # 메뉴 없이 Unload 모듈만 실행
+./P2O.sh load      # 메뉴 없이 Load 모듈만 실행
 ```
 
 | 메뉴 | 내용 |

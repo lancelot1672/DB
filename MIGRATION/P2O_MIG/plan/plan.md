@@ -39,10 +39,10 @@
 | `P2O.env` (gitignore) / `P2O.env.example` | 접속 정보·경로·옵션, 클라이언트 env 파일 경로 |
 | `env/PG.env` / `env/ORACLE.env` / `env/TIBERO.env` (gitignore, `*.env.example` 템플릿) | 클라이언트 환경변수(`*_HOME`, `PATH`, `LD_LIBRARY_PATH`, `NLS_LANG`/`TB_NLS_LANG`) |
 | `sql/*.sql` | 추출 SQL (파일 1개 = SELECT 1개 = CSV 1개) |
-| `00.P2O_MENU.sh` | 유일한 쉘. 메뉴(Source / Target / 적재 옵션 설정 관리, 접속 테스트, 산출물·로그 조회) + Unload / Load 모듈 |
+| `P2O.sh` | 유일한 쉘. 메뉴(Source / Target / 적재 옵션 설정 관리, 접속 테스트, 산출물·로그 조회) + Unload / Load 모듈 |
 | `README.md` | 사용법·SQL 작성 규칙·예시 |
 
-`00.P2O_MENU.sh` 내부 구성:
+`P2O.sh` 내부 구성:
 
 | 구역 | 함수 |
 |------|------|
@@ -56,7 +56,7 @@
 
 모듈은 `_run_module` 이 서브셸 `( _<module>_run )` 로 실행한다: 모듈 안의 `exit` 는 모듈만 끝내고,
 모듈이 source 하는 클라이언트 env(PATH / LD_LIBRARY_PATH / NLS) 와 trap·로그 파일 전환이 메뉴에 남지 않는다.
-모듈은 시작할 때 `P2O.env` 를 다시 읽는다(메뉴에서 바꾼 값 반영). `00.P2O_MENU.sh unload|load` 로 메뉴 없이 실행 가능.
+모듈은 시작할 때 `P2O.env` 를 다시 읽는다(메뉴에서 바꾼 값 반영). `P2O.sh unload|load` 로 메뉴 없이 실행 가능.
 
 `P2O.env` 주요 항목: `PG_ENV_FILE/ORACLE_ENV_FILE/TIBERO_ENV_FILE`, `PG_HOST/PG_PORT/PG_DB`, `DB_TNS`,
 `TARGET_DBMS`(`ORACLE`|`TIBERO`), `BASE_PATH`, `LOAD_MODE`(`APPEND`|`TRUNCATE`), `DIRECT`(`Y`|`N`), `LOAD_ERRORS`, `CHARSET`,
