@@ -2,16 +2,18 @@
 # ============================================================
 # GET_DDL.sh
 # GET_DDL dashboard (menu) for the 01 / 03.EXTRACT_*.sh scripts.
-#   [SETUP] 0. Build MIG_TAB_LIST *.lst in the current directory -> DBADM.MIG_TAB_LIST_{OWNER}
-#                                 (+ TABLE / INDEX tablespace -> TBS_TAB / TBS_IND)
-#   [RUN]  1. Run one GET_DDL   (TABLE / CONSTRAINT_C / INDEX / CONSTRAINT_P)
-#          2. Run all           TABLE -> CONSTRAINT_C -> INDEX -> CONSTRAINT_P
-#   [VIEW] 3. MIG_TAB_LIST      grid of DBADM.MIG_TAB_LIST_{OWNER} (Enter : more rows)
-#          4. Logs              ${BASE_PATH}/log/*.log
-#          5. DDL output        ${BASE_PATH}/ddl/*.sql
-#          6. Count by schema   latest result per OWNER / type (run history JSON)
-#   [EXIT] 7. Quit
-# Run history : ${BASE_PATH}/log/GET_DDL_HISTORY.json (one object per step run)
+#   [SETUP] 0. Build MIG_TAB_LIST  *.lst in the current directory -> DBADM.MIG_TAB_LIST_{OWNER}
+#                                  (+ TABLE / INDEX tablespace -> TBS_TAB / TBS_IND)
+#                                  built schemas are recorded in GET_DDL_SCHEMA.json
+#           1. MIG_TAB_LIST        grid of DBADM.MIG_TAB_LIST_{OWNER} (schemas of GET_DDL_SCHEMA.json)
+#   [RUN]   2. Run one GET_DDL     (TABLE / CONSTRAINT_C / INDEX / CONSTRAINT_P)
+#           3. Run all             TABLE -> CONSTRAINT_C -> INDEX -> CONSTRAINT_P
+#   [VIEW]  4. Logs                ${BASE_PATH}/log/*.log
+#           5. DDL output          ${BASE_PATH}/ddl/*.sql
+#           6. Count by schema     latest result per OWNER / type (run history JSON)
+#   [EXIT]  7. Quit
+# Run history    : ${BASE_PATH}/log/GET_DDL_HISTORY.json (one object per step run)
+# Built schemas  : ${BASE_PATH}/log/GET_DDL_SCHEMA.json  (one object per OWNER , [0] Build)
 # Usage: GET_DDL.sh   (no argument)   , NO_COLOR=1 GET_DDL.sh : no color
 # ============================================================
 
@@ -31,13 +33,13 @@ mkdir -p "${BASE_PATH}/log" "${BASE_PATH}/tmp" "${BASE_PATH}/ddl"
 
 LIST_DIR="${PWD}"   # *.lst for [0] Build MIG_TAB_LIST : the directory GET_DDL.sh is started from
 HIST_FILE="${BASE_PATH}/log/GET_DDL_HISTORY.json"
+SCHEMA_FILE="${BASE_PATH}/log/GET_DDL_SCHEMA.json"
 RUN_OUT="${BASE_PATH}/tmp/GET_DDL_RUN_$$.txt"
 OWN_OUT="${BASE_PATH}/tmp/GET_DDL_OWNER_$$.txt"
 LIST_OUT="${BASE_PATH}/tmp/GET_DDL_LIST_$$.txt"
 
-# Step order of "Run all" : label (LABEL in each script) / short name / script
+# Step order of "Run all" : label (LABEL in each script) / script
 STEP_LABELS=(TABLE CONSTRAINT_C INDEX CONSTRAINT_P)
-STEP_SHORT=(TABLE CON_C INDEX CON_P)
 STEP_SCRIPTS=(03.EXTRACT_TABLE.sh 03.EXTRACT_CONSTRAINT_C.sh 03.EXTRACT_INDEX.sh 03.EXTRACT_CONSTRAINT_P.sh)
 
 # --- Screen ---
@@ -73,6 +75,8 @@ trap ':' INT
 
 _clear() { clear 2>/dev/null || printf '\033[2J\033[H' ; }
 _pause() { echo ; read -r -p "  Press Enter to return..." _ ; }
+_tcols() { tput cols 2>/dev/null || echo 80 ; }
+_tlines() { tput lines 2>/dev/null || echo 24 ; }
 
 # ============================================================
 # Common : drawing
@@ -121,6 +125,65 @@ _st() {
     printf "%s%-*s%s" "${c}" "$2" "$1" "${C_0}"
 }
 
+# _grid_lines <MAX WIDTH> <HEADER> : rows from stdin -> boxed grid lines on stdout
+#   HEADER / rows = cells separated by "|"
+#   header cell suffix  ">" : right-justified   "*" : narrowed last (e.g. TABLE_NAME)
+#   output : top bar , header , "=" bar , rows ... , bottom bar
+#   too wide : the widest column is narrowed first (down to 6 , "*" column down to 12)
+_grid_lines() {
+    awk -F'|' -v maxw="$1" -v head="$2" '
+        function cell(v, wd, right) {
+            if (length(v) > wd) v = substr(v, 1, wd - 2) ".."
+            return right ? sprintf("%" wd "s", v) : sprintf("%-" wd "s", v)
+        }
+        BEGIN {
+            nc = split(head, h, "|")
+            for (i = 1 ; i <= nc ; i++) {
+                rj[i] = 0 ; pri[i] = 0
+                while (h[i] ~ /[>*]$/) {
+                    if (h[i] ~ />$/) rj[i] = 1 ; else pri[i] = 1
+                    h[i] = substr(h[i], 1, length(h[i]) - 1)
+                }
+                w[i] = length(h[i])
+            }
+        }
+        { n++ ; for (i = 1 ; i <= nc ; i++) { d[n, i] = $i ; if (length($i) > w[i]) w[i] = length($i) } }
+        END {
+            for (i = 1 ; i <= nc ; i++) if (w[i] > (pri[i] ? 60 : 40)) w[i] = (pri[i] ? 60 : 40)
+            total = 1
+            for (i = 1 ; i <= nc ; i++) total += w[i] + 3
+            while (total > maxw) {
+                m = 0
+                for (i = 1 ; i <= nc ; i++) {
+                    if (w[i] <= (pri[i] ? 12 : 6)) continue
+                    e = w[i] - (pri[i] ? 12 : 0)
+                    if (m == 0 || e > em) { m = i ; em = e }
+                }
+                if (m == 0) break
+                w[m]-- ; total--
+            }
+            bar = "+"
+            for (i = 1 ; i <= nc ; i++) bar = bar sprintf("%" (w[i] + 2) "s", "") "+"
+            gsub(/ /, "-", bar)
+            bar2 = bar ; gsub(/-/, "=", bar2)
+            line = "|"
+            for (i = 1 ; i <= nc ; i++) line = line " " cell(h[i], w[i], rj[i]) " |"
+            print bar ; print line ; print bar2
+            for (r = 1 ; r <= n ; r++) {
+                line = "|"
+                for (i = 1 ; i <= nc ; i++) line = line " " cell(d[r, i], w[i], rj[i]) " |"
+                print line
+            }
+            print bar
+        }'
+}
+
+# _grid <HEADER> <ROW>... : print a static grid (indent 2)
+_grid() {
+    local head="$1" ; shift
+    printf '%s\n' "$@" | _grid_lines $(( $(_tcols) - 3 )) "${head}" | sed 's/^/  /'
+}
+
 # _header : status panel on top of every screen
 _header() {
     local sq="NOT FOUND"
@@ -138,55 +201,47 @@ _header() {
 # ============================================================
 # Common : input
 # ============================================================
-# _menu <TITLE> <ITEM>... : sectioned menu
-#   ITEM = "-SECTION"  section line (not selectable)
-#        = "KEY|TEXT"  selectable item ; KEY (one char, optional, not j/k/q) selects it directly
+# _menu <TITLE> <HEADER> <ROW>... : grid menu
+#   HEADER = column names separated by "|" (see _grid_lines)
+#   ROW    = "KEY|cell|cell..." ; KEY (one char, optional, not j/k/q) selects the row directly
 #   Up / Down (k / j) move , Enter select , KEY direct , q back
-#   -> MENU_KEY / MENU_VAL (TEXT) / MENU_IDX (index among selectable items) ; return 1 = back
+#   -> MENU_KEY / MENU_VAL (first cell) / MENU_IDX (row index) ; return 1 = back
 _menu() {
-    local title="$1" ; shift
-    local -a lines=("$@") sel=()
-    local n i cur=0 top=0 want rows key rest drawn=0 txt k li hint="" found
+    local title="$1" head="$2" ; shift 2
+    local -a rows=("$@") keys=() cells=() g
+    local r n i cur=0 top=0 vis key rest drawn=0 found hint=""
 
-    for (( i = 0 ; i < ${#lines[@]} ; i++ )) ; do
-        [[ "${lines[i]}" == -* ]] && continue
-        sel+=("${i}")
-        [[ -n "${lines[i]%%|*}" ]] && hint="   [key] : direct"
+    for r in "${rows[@]}" ; do
+        keys+=("${r%%|*}")
+        cells+=("${r#*|}")
+        [[ -n "${r%%|*}" ]] && hint="   [key] : direct"
     done
-    n=${#lines[@]}
+    n=${#rows[@]}
+    mapfile -t g < <(printf '%s\n' "${cells[@]}" | _grid_lines $(( $(_tcols) - 4 )) "${head}")
 
-    # visible rows : the list scrolls when it is longer than the terminal
-    rows=$(( $(tput lines 2>/dev/null || echo 24) - HEADER_ROWS - 4 ))   # title 2 + hint 1 + spare 1
-    (( rows < 5 )) && rows=5
-    (( rows > n )) && rows=$n
+    # visible rows : the grid scrolls when it is longer than the terminal
+    vis=$(( $(_tlines) - HEADER_ROWS - 8 ))   # title 2 , grid head 3 , bottom 1 , hint 1 , spare 1
+    (( vis < 3 )) && vis=3
+    (( vis > n )) && vis=$n
 
     _title "${title}"
+    printf "   %s\n" "${g[0]}" "${g[1]}" "${g[2]}"
     printf '\033[?25l'
     while true ; do
-        li=${sel[cur]}
-        # keep the section line just above the current item visible
-        want=${li}
-        (( li > 0 )) && [[ "${lines[li-1]}" == -* ]] && want=$(( li - 1 ))
-        (( want < top )) && top=${want}
-        (( li >= top + rows )) && top=$(( li - rows + 1 ))
+        (( cur < top )) && top=${cur}
+        (( cur >= top + vis )) && top=$(( cur - vis + 1 ))
 
-        (( drawn )) && printf '\033[%dA' "$(( rows + 1 ))"
-        for (( i = top ; i < top + rows ; i++ )) ; do
-            printf '\r\033[K'
-            if [[ "${lines[i]}" == -* ]] ; then
-                _section "${lines[i]#-}"
-                continue
-            fi
-            k="${lines[i]%%|*}" ; txt="${lines[i]#*|}"
-            if [[ -n "${k}" ]] ; then k="[${k}]" ; else k="   " ; fi
-            if (( i == li )) ; then
-                printf "  %s> %s  %-*s%s\n" "${C_RV}${C_B}" "${k}" $(( W - 11 )) "$(_cut $(( W - 11 )) "${txt}")" "${C_0}"
+        (( drawn )) && printf '\033[%dA' "$(( vis + 2 ))"
+        for (( i = top ; i < top + vis ; i++ )) ; do
+            if (( i == cur )) ; then
+                printf '\r\033[K %s>%s %s%s%s\n' "${C_B}${C_CY}" "${C_0}" "${C_RV}" "${g[i + 3]}" "${C_0}"
             else
-                printf "    %s%s%s  %s\n" "${C_CY}" "${k}" "${C_0}" "$(_cut $(( W - 11 )) "${txt}")"
+                printf '\r\033[K   %s\n' "${g[i + 3]}"
             fi
         done
+        printf '\r\033[K   %s\n' "${g[n + 3]}"
         printf '\r\033[K  %sUp/Down j/k : move   Enter : select%s   q : back   [%d/%d]%s\n' \
-            "${C_DIM}" "${hint}" "$(( cur + 1 ))" "${#sel[@]}" "${C_0}"
+            "${C_DIM}" "${hint}" "$(( cur + 1 ))" "${n}" "${C_0}"
         drawn=1
 
         IFS= read -rsn1 key || { printf '\033[?25h' ; return 1 ; }
@@ -197,22 +252,20 @@ _menu() {
         fi
         case "${key}" in
             $'\033[A'|$'\033OA'|k) (( cur > 0 )) && cur=$(( cur - 1 )) ; continue ;;
-            $'\033[B'|$'\033OB'|j) (( cur < ${#sel[@]} - 1 )) && cur=$(( cur + 1 )) ; continue ;;
+            $'\033[B'|$'\033OB'|j) (( cur < n - 1 )) && cur=$(( cur + 1 )) ; continue ;;
             "")                    break ;;
             q|Q|$'\033')           printf '\033[?25h' ; return 1 ;;
         esac
         # direct key
         found=-1
-        for (( i = 0 ; i < ${#sel[@]} ; i++ )) ; do
-            k="${lines[sel[i]]%%|*}"
-            if [[ -n "${k}" && "${k^^}" == "${key^^}" ]] ; then found=${i} ; break ; fi
+        for (( i = 0 ; i < n ; i++ )) ; do
+            if [[ -n "${keys[i]}" && "${keys[i]^^}" == "${key^^}" ]] ; then found=${i} ; break ; fi
         done
         if (( found >= 0 )) ; then cur=${found} ; break ; fi
     done
     printf '\033[?25h'
-    li=${sel[cur]}
-    MENU_KEY="${lines[li]%%|*}"
-    MENU_VAL="${lines[li]#*|}"
+    MENU_KEY="${keys[cur]}"
+    MENU_VAL="${cells[cur]%%|*}"
     MENU_IDX=${cur}
     return 0
 }
@@ -246,11 +299,10 @@ _confirm() {
     [[ "${a}" =~ ^[yY]$ ]]
 }
 
-# _select_owner <SCREEN TITLE> [NOALL] : pick OWNER of DBADM.MIG_TAB_LIST_{OWNER}
+# _select_owner <SCREEN TITLE> : pick OWNER of DBADM.MIG_TAB_LIST_{OWNER} (from DBA_TABLES)
 #   -> OWNER_LIST (one OWNER, or every OWNER with "ALL schemas") ; return 1 = cancelled
-#   NOALL : no "ALL schemas" item
 _select_owner() {
-    local -a owners items
+    local -a owners rows
     local o
 
     sqlplus -s ${DB_USER}/${DB_PASS} > ${OWN_OUT} 2>&1 <<_EOF
@@ -285,14 +337,12 @@ _EOF
         return 0
     fi
 
-    items=("-SCHEMA  (DBADM.MIG_TAB_LIST_{OWNER} , ${#owners[@]})")
+    rows=()
     for o in "${owners[@]}" ; do
-        items+=("|${o}")
+        rows+=("||${o}|DBADM.MIG_TAB_LIST_${o}")
     done
-    items+=("-OPTION")
-    [[ "$2" != "NOALL" ]] && items+=("A|ALL schemas (${#owners[@]})")
-    items+=("T|Type OWNER" "B|Back")
-    _menu "$1  :  select schema" "${items[@]}" || return 1
+    rows+=("A|A|ALL schemas|${#owners[@]} schema(s)" "T|T|Type OWNER|" "B|B|Back|")
+    _menu "$1  :  select schema" "KEY|SCHEMA|LIST TABLE" "${rows[@]}" || return 1
 
     case "${MENU_KEY}" in
         A) OWNER_LIST=("${owners[@]}") ;;
@@ -300,45 +350,99 @@ _EOF
            _ask_name "  OWNER : " || return 1
            OWNER_LIST=("${ASK_VAL}") ;;
         B) return 1 ;;
-        *) OWNER_LIST=("${MENU_VAL}") ;;
+        *) OWNER_LIST=("${owners[MENU_IDX]}") ;;
     esac
     return 0
 }
 
 # ============================================================
-# Run history (JSON)
-#   [
-#     {"run_id":"..","mode":"ALL","time":"..","owner":"..","type":"TABLE","status":"OK",
-#      "rc":0,"obj_cnt":10,"ddl_cnt":10,"elapsed_sec":3,"ddl_file":"..","log_file":".."},
-#     ...
-#   ]
-#   one object per line -> read with grep / awk (no jq needed)
-#   status : OK / NONE (no object of that type) / FAIL
-#   obj_cnt : objects requested (GET_DDL statements) , ddl_cnt : statements in the DDL file
+# JSON files : one object per line -> read with grep / awk (no jq needed)
 # ============================================================
 _json_str() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' ; }
 
-# _hist_add <RUN_ID> <MODE> <OWNER> <TYPE> <STATUS> <RC> <OBJ_CNT> <DDL_CNT> <SEC> <DDL_FILE> <LOG_FILE>
-_hist_add() {
-    local obj tmp="${HIST_FILE}.tmp.$$"
-    obj=$(printf '{"run_id":"%s","mode":"%s","time":"%s","owner":"%s","type":"%s","status":"%s","rc":%d,"obj_cnt":%d,"ddl_cnt":%d,"elapsed_sec":%d,"ddl_file":"%s","log_file":"%s"}' \
-        "$1" "$2" "$(date '+%Y-%m-%d %H:%M:%S')" "$3" "$4" "$5" "$6" "$7" "$8" "$9" \
-        "$(_json_str "${10}")" "$(_json_str "${11}")")
-    {
-        echo "["
-        { [[ -f "${HIST_FILE}" ]] && grep '^  {' "${HIST_FILE}" | sed 's/,$//' ; echo "  ${obj}" ; } \
-            | awk 'NR > 1 { print prev "," } { prev = $0 } END { print prev }'
-        echo "]"
-    } > "${tmp}" && mv "${tmp}" "${HIST_FILE}"
+# _json_join : object lines on stdin -> JSON array on stdout
+_json_join() {
+    echo "["
+    awk 'NR > 1 { print prev "," } { prev = $0 } END { if (NR) print prev }'
+    echo "]"
 }
 
-# awk helper : v("key") = value of a string / number field in one history line
+# awk helper : v("key") = value of a string / number field in one JSON line
 AWK_V='
 function v(k) {
     if (match($0, "\"" k "\":\"[^\"]*\"")) return substr($0, RSTART + length(k) + 4, RLENGTH - length(k) - 5)
     if (match($0, "\"" k "\":-?[0-9]+"))   return substr($0, RSTART + length(k) + 3, RLENGTH - length(k) - 3)
     return ""
 }'
+
+# ------------------------------------------------------------
+# Built schemas (GET_DDL_SCHEMA.json) : written by [0] Build , read by [1] MIG_TAB_LIST
+#   {"owner":"HR","table":"DBADM.MIG_TAB_LIST_HR","tables":2,"tbs_tab":"..","tbs_ind":"..",
+#    "list_file":"..","created":"YYYY-MM-DD HH:MI:SS"}
+#   building the same OWNER again replaces its object
+# ------------------------------------------------------------
+# _schema_add <LIST_FILE> <TBS_TAB> <TBS_IND> : record every OWNER of LIST_FILE
+_schema_add() {
+    local lst="$1" tt="$2" ti="$3" tmp="${SCHEMA_FILE}.tmp.$$" now o c
+    now=$(date '+%Y-%m-%d %H:%M:%S')
+    awk 'NF >= 2 { if (!($1 in c)) o[++n] = $1 ; c[$1]++ } END { for (i = 1 ; i <= n ; i++) print o[i], c[o[i]] }' \
+        "${lst}" > ${OWN_OUT}
+    {
+        [[ -f "${SCHEMA_FILE}" ]] && grep '^  {' "${SCHEMA_FILE}" | sed 's/,$//' \
+            | grep -v -F -f <(awk '{ printf "\"owner\":\"%s\"\n", $1 }' ${OWN_OUT})
+        while read -r o c ; do
+            printf '  {"owner":"%s","table":"DBADM.MIG_TAB_LIST_%s","tables":%d,"tbs_tab":"%s","tbs_ind":"%s","list_file":"%s","created":"%s"}\n' \
+                "${o}" "${o}" "${c}" "${tt}" "${ti}" "$(_json_str "${lst}")" "${now}"
+        done < ${OWN_OUT}
+    } | _json_join > "${tmp}" && mv "${tmp}" "${SCHEMA_FILE}"
+}
+
+# _select_schema <SCREEN TITLE> : pick one OWNER recorded in GET_DDL_SCHEMA.json -> OWNER_LIST ; return 1 = cancelled
+_select_schema() {
+    local -a owners rows
+    local o tb cr
+    owners=() ; rows=()
+    if [[ -s "${SCHEMA_FILE}" ]] ; then
+        while IFS='|' read -r o tb cr ; do
+            [[ -z "${o}" ]] && continue
+            owners+=("${o}")
+            rows+=("|${o}|${tb}|${cr}")
+        done <<< "$(grep '^  {' "${SCHEMA_FILE}" | awk "${AWK_V}"'{ print v("owner") "|" v("tables") "|" v("created") }' | sort)"
+    fi
+
+    _clear
+    _header
+    if (( ${#owners[@]} == 0 )) ; then
+        _title "$1  :  schema"
+        _section "No schema built yet  ([0] Build MIG_TAB_LIST)"
+        printf "    %s\n" "$(_fit $(( W - 6 )) "${SCHEMA_FILE}")"
+        _pause
+        return 1
+    fi
+
+    rows+=("B|Back||")
+    _menu "$1  :  select schema  (GET_DDL_SCHEMA.json)" "SCHEMA|TABLES>|CREATED" "${rows[@]}" || return 1
+    [[ "${MENU_KEY}" == "B" ]] && return 1
+    OWNER_LIST=("${owners[MENU_IDX]}")
+    return 0
+}
+
+# ------------------------------------------------------------
+# Run history (GET_DDL_HISTORY.json)
+#   {"run_id":"..","mode":"ALL","time":"..","owner":"..","type":"TABLE","status":"OK",
+#    "rc":0,"obj_cnt":10,"ddl_cnt":10,"elapsed_sec":3,"ddl_file":"..","log_file":".."}
+#   status : OK / NONE (no object of that type) / FAIL
+#   obj_cnt : objects requested (GET_DDL statements) , ddl_cnt : statements in the DDL file
+# ------------------------------------------------------------
+# _hist_add <RUN_ID> <MODE> <OWNER> <TYPE> <STATUS> <RC> <OBJ_CNT> <DDL_CNT> <SEC> <DDL_FILE> <LOG_FILE>
+_hist_add() {
+    local obj tmp="${HIST_FILE}.tmp.$$"
+    obj=$(printf '{"run_id":"%s","mode":"%s","time":"%s","owner":"%s","type":"%s","status":"%s","rc":%d,"obj_cnt":%d,"ddl_cnt":%d,"elapsed_sec":%d,"ddl_file":"%s","log_file":"%s"}' \
+        "$1" "$2" "$(date '+%Y-%m-%d %H:%M:%S')" "$3" "$4" "$5" "$6" "$7" "$8" "$9" \
+        "$(_json_str "${10}")" "$(_json_str "${11}")")
+    { [[ -f "${HIST_FILE}" ]] && grep '^  {' "${HIST_FILE}" | sed 's/,$//' ; echo "  ${obj}" ; } \
+        | _json_join > "${tmp}" && mv "${tmp}" "${HIST_FILE}"
+}
 
 _hist_cnt() { [[ -f "${HIST_FILE}" ]] && grep -c '^  {' "${HIST_FILE}" || echo 0 ; }
 
@@ -361,6 +465,154 @@ _last_run() {
             if (no > 3) ow = ow ",+" (no - 3)
             printf "%s  %-6s %s  (ok %d / none %d / fail %d)", t, m, ow, cnt["OK"], cnt["NONE"], cnt["FAIL"]
         }'
+}
+
+# ============================================================
+# Setup
+# ============================================================
+# [0] Build DBADM.MIG_TAB_LIST_{OWNER} : pick a *.lst in the current directory ,
+#     ask TABLE / INDEX tablespace , run 01.CREATE_MIG_TAB_LIST_BY_OWNER.sh ,
+#     on success record its OWNERs in GET_DDL_SCHEMA.json
+_menu_build() {
+    local -a files rows
+    local f lst tt ti rc
+    _clear
+    _header
+    files=()
+    while IFS= read -r f ; do
+        [[ -f "${f}" ]] && files+=("${f}")
+    done <<< "$(ls -t "${LIST_DIR}"/*.lst 2>/dev/null)"
+    if (( ${#files[@]} == 0 )) ; then
+        _title "0. BUILD MIG_TAB_LIST"
+        _section "No *.lst file"
+        printf "    %s\n" "$(_fit $(( W - 6 )) "${LIST_DIR}")"
+        printf "    each line = OWNER TABLE_NAME (space separated)\n"
+        _pause
+        return 0
+    fi
+
+    rows=()
+    for f in "${files[@]}" ; do
+        rows+=("|$(basename "${f}")|$(date -r "${f}" '+%m-%d %H:%M' 2>/dev/null)|$(awk 'NF >= 2' "${f}" | wc -l | tr -d ' ')|$(awk 'NF >= 2 { print $1 }' "${f}" | sort -u | wc -l | tr -d ' ')")
+    done
+    rows+=("B|Back|||")
+    _menu "0. BUILD MIG_TAB_LIST  :  select list file" "LIST FILE*|MODIFIED|TABLES>|OWNERS>" "${rows[@]}" || return 0
+    [[ "${MENU_KEY}" == "B" ]] && return 0
+    lst="${files[MENU_IDX]}"
+
+    _clear
+    _header
+    _title "0. BUILD MIG_TAB_LIST  :  $(basename "${lst}")"
+    mapfile -t rows < <(awk 'NF >= 2 { if (!($1 in c)) o[++n] = $1 ; c[$1]++ }
+                             END { for (i = 1 ; i <= n ; i++) printf "%s|%d|DBADM.MIG_TAB_LIST_%s\n", o[i], c[o[i]], o[i] }' "${lst}")
+    _grid "OWNER|TABLES>|LIST TABLE" "${rows[@]}"
+    echo
+    _section "TABLESPACE  (Enter = none : no tablespace clause in DDL)"
+    _ask_tbs "    TABLE TABLESPACE : " || return 0 ; tt="${ASK_VAL}"
+    _ask_tbs "    INDEX TABLESPACE : " || return 0 ; ti="${ASK_VAL}"
+    echo
+    _grid "PLAN|VALUE" \
+        "List file|$(_fit 50 "${lst}")" \
+        "TABLE TABLESPACE|${tt:-(none)}" \
+        "INDEX TABLESPACE|${ti:-(none)}" \
+        "Script|01.CREATE_MIG_TAB_LIST_BY_OWNER.sh" \
+        "Steps|CREATE -> INSERT preview -> y/N"
+    echo
+    _confirm "  Create DBADM.MIG_TAB_LIST_{OWNER}" || return 0
+
+    echo
+    _log "BUILD : ${lst} (TBS_TAB=${tt:-none} , TBS_IND=${ti:-none})"
+    : > ${RUN_OUT}
+    bash "${SCRIPT_DIR}/01.CREATE_MIG_TAB_LIST_BY_OWNER.sh" "${lst}" "${tt}" "${ti}" 2>&1 | tee "${RUN_OUT}"
+    rc=${PIPESTATUS[0]}
+    if (( rc == 0 )) && grep -q 'Per-owner MIG_TAB_LIST tables created and' ${RUN_OUT} ; then
+        _schema_add "${lst}" "${tt}" "${ti}"
+        _ok "Schema(s) recorded : ${SCHEMA_FILE}"
+    else
+        _log "Schema(s) not recorded (build not completed , rc=${rc})"
+    fi
+    _log "BUILD end (rc=${rc})"
+    _pause
+}
+
+# [1] MIG_TAB_LIST : DBADM.MIG_TAB_LIST_{OWNER} as a grid (that table only)
+#   - schema : one recorded in GET_DDL_SCHEMA.json by [0] Build
+#   - columns : SEQ / OWNER / TABLE_NAME / USE_YN / TBS_TAB / TBS_IND
+#     (an old list table without TBS_TAB / TBS_IND shows them empty)
+#   - first screen fills the terminal , then Enter : next screen (a : all , q : stop)
+_screen_list() {
+    local owner tab tbs lines page cnt key i last total stopped=0
+    local -a grid
+    _select_schema "1. MIG_TAB_LIST" || return 0
+    owner="${OWNER_LIST[0]}"
+    tab="DBADM.MIG_TAB_LIST_${owner}"
+
+    # old list tables have no TBS_TAB / TBS_IND
+    tbs=$(sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF | tr -d '[:space:]'
+set pagesize 0 feedback off heading off verify off
+SELECT COUNT(*) FROM DBA_TAB_COLUMNS
+ WHERE OWNER = 'DBADM' AND TABLE_NAME = 'MIG_TAB_LIST_${owner}' AND COLUMN_NAME IN ('TBS_TAB', 'TBS_IND');
+exit
+_EOF
+)
+    if [[ "${tbs}" == "2" ]] ; then tbs="TBS_TAB || '|' || TBS_IND" ; else tbs="'|'" ; fi
+
+    sqlplus -s ${DB_USER}/${DB_PASS} > ${LIST_OUT} 2>&1 <<_EOF
+set pagesize 0
+set linesize 4000
+set trimout on
+set trimspool on
+set feedback off
+set heading off
+set echo off
+set verify off
+SELECT 'R|' || SEQ || '|' || OWNER || '|' || TABLE_NAME || '|' || USE_YN || '|' || ${tbs}
+  FROM ${tab}
+ ORDER BY SEQ;
+exit
+_EOF
+
+    _clear
+    _header
+    _title "1. MIG_TAB_LIST  :  ${tab}"
+    total=$(grep -c '^R|' ${LIST_OUT})
+    if (( total == 0 )) ; then
+        _section "No row (or DB error)"
+        sed -e '/^[[:space:]]*$/d' -e 's/^/    /' ${LIST_OUT} | head -n 8
+        _pause
+        return 0
+    fi
+
+    # grid[0..2] = head , then rows , last = bottom line
+    mapfile -t grid < <(grep '^R|' ${LIST_OUT} | sed 's/^R|//' \
+        | _grid_lines $(( $(_tcols) - 3 )) "SEQ>|OWNER|TABLE_NAME*|USE_YN|TBS_TAB|TBS_IND")
+    printf "    rows : %s\n" "${total}"
+    printf "  %s\n" "${grid[0]}" "${grid[1]}" "${grid[2]}"
+
+    # first screen : what is left under header / title / rows line / grid head ; then one full screen per Enter
+    lines=$(_tlines)
+    page=$(( lines - HEADER_ROWS - 2 - 1 - 3 - 1 ))   # title 2 , rows 1 , grid head 3 , prompt 1
+    (( page < 3 )) && page=3
+    last=$(( ${#grid[@]} - 1 ))
+    cnt=0
+    for (( i = 3 ; i < last ; i++ )) ; do
+        if (( cnt >= page )) ; then
+            printf "  %s-- %d / %d rows   Enter : more   a : all   q : stop --%s" "${C_RV}" $(( i - 3 )) "${total}" "${C_0}"
+            IFS= read -rsn1 key
+            printf '\r\033[K'
+            case "${key}" in
+                q|Q) stopped=1 ; break ;;
+                a|A) page=999999999 ;;
+                *)   page=$(( lines - 1 )) ;;
+            esac
+            cnt=0
+        fi
+        printf "  %s\n" "${grid[i]}"
+        cnt=$(( cnt + 1 ))
+    done
+    printf "  %s\n" "${grid[last]}"
+    (( stopped )) && printf "  %s(stopped : %d / %d rows shown)%s\n" "${C_DIM}" $(( i - 3 )) "${total}" "${C_0}"
+    _pause
 }
 
 # ============================================================
@@ -410,7 +662,7 @@ _print_summary() {
     _title "$1  :  result"
     _out "%s\n" "${bar}"
     _out "  | %-18s | %-12s | %-6s | %6s | %6s | %5s |\n" "OWNER" "TYPE" "STATUS" "OBJECT" "DDL" "TIME"
-    _out "%s\n" "${bar}"
+    _out "%s\n" "${bar//-/=}"
     for s in "${SUMMARY[@]}" ; do
         IFS='|' read -r o t st ob dd sc <<< "${s}"
         case "${st}" in OK) ok=$(( ok + 1 )) ;; NONE) none=$(( none + 1 )) ;; *) fail=$(( fail + 1 )) ;; esac
@@ -423,86 +675,25 @@ _print_summary() {
     _out "  history : %s\n" "${HIST_FILE}"
 }
 
-# [0] Build DBADM.MIG_TAB_LIST_{OWNER} : pick a *.lst in the current directory ,
-#     ask TABLE / INDEX tablespace , run 01.CREATE_MIG_TAB_LIST_BY_OWNER.sh
-_menu_build() {
-    local -a files items
-    local f lst tt ti
-    _clear
-    _header
-    files=()
-    while IFS= read -r f ; do
-        [[ -f "${f}" ]] && files+=("${f}")
-    done <<< "$(ls -t "${LIST_DIR}"/*.lst 2>/dev/null)"
-    if (( ${#files[@]} == 0 )) ; then
-        _title "0. BUILD MIG_TAB_LIST"
-        _section "No *.lst file"
-        printf "    %s\n" "$(_fit $(( W - 6 )) "${LIST_DIR}")"
-        printf "    each line = OWNER TABLE_NAME (space separated)\n"
-        _pause
-        return 0
-    fi
-
-    # FILE(36) MODIFIED(11) TABLES(6) OWNERS(6) ; 7 spaces = item indent
-    items=("-$(printf "       %-36s %-11s %6s %6s" "LIST FILE (${#files[@]})" "MODIFIED" "TABLES" "OWNERS")")
-    for f in "${files[@]}" ; do
-        items+=("|$(printf "%-36s %-11s %6s %6s" "$(_cut 36 "$(basename "${f}")")" \
-            "$(date -r "${f}" '+%m-%d %H:%M' 2>/dev/null)" \
-            "$(awk 'NF >= 2' "${f}" | wc -l | tr -d ' ')" \
-            "$(awk 'NF >= 2 { print $1 }' "${f}" | sort -u | wc -l | tr -d ' ')")")
-    done
-    items+=("-" "B|Back")
-    _menu "0. BUILD MIG_TAB_LIST  :  select list file" "${items[@]}" || return 0
-    [[ "${MENU_KEY}" == "B" ]] && return 0
-    lst="${files[MENU_IDX]}"
-
-    _clear
-    _header
-    _title "0. BUILD MIG_TAB_LIST  :  $(basename "${lst}")"
-    _section "LIST  (OWNER -> DBADM.MIG_TAB_LIST_{OWNER})"
-    awk 'NF >= 2 { if (!($1 in c)) o[++n] = $1 ; c[$1]++ }
-         END {
-             for (i = 1 ; i <= n && i <= 10 ; i++) printf "    %-24s : %6d table(s)\n", o[i], c[o[i]]
-             if (n > 10) printf "    ... %d more owner(s)\n", n - 10
-         }' "${lst}"
-    echo
-    _section "TABLESPACE  (Enter = none : no tablespace clause in DDL)"
-    _ask_tbs "    TABLE TABLESPACE : " || return 0 ; tt="${ASK_VAL}"
-    _ask_tbs "    INDEX TABLESPACE : " || return 0 ; ti="${ASK_VAL}"
-    echo
-    _section "PLAN"
-    printf "    %-10s: %s\n" "List file" "$(_fit $(( W - 18 )) "${lst}")"
-    printf "    %-10s: %s\n" "TABLE TBS" "${tt:-(none)}"
-    printf "    %-10s: %s\n" "INDEX TBS" "${ti:-(none)}"
-    printf "    %-10s: %s\n" "Script" "01.CREATE_MIG_TAB_LIST_BY_OWNER.sh (CREATE -> INSERT preview -> y/N)"
-    echo
-    _confirm "  Create DBADM.MIG_TAB_LIST_{OWNER}" || return 0
-
-    echo
-    _log "BUILD : ${lst} (TBS_TAB=${tt:-none} , TBS_IND=${ti:-none})"
-    bash "${SCRIPT_DIR}/01.CREATE_MIG_TAB_LIST_BY_OWNER.sh" "${lst}" "${tt}" "${ti}"
-    _log "BUILD end (rc=$?)"
-    _pause
-}
-
-# [1] Run one GET_DDL
+# [2] Run one GET_DDL
 _menu_run_one() {
-    local i idx owner run_id no=0 items=("-OBJECT TYPE")
+    local i idx owner run_id no=0
+    local -a rows=()
     _clear
     _header
     for (( i = 0 ; i < ${#STEP_LABELS[@]} ; i++ )) ; do
-        items+=("$(( i + 1 ))|$(printf "%-14s %s" "${STEP_LABELS[i]}" "${STEP_SCRIPTS[i]}")")
+        rows+=("$(( i + 1 ))|$(( i + 1 ))|${STEP_LABELS[i]}|${STEP_SCRIPTS[i]}")
     done
-    items+=("-" "B|Back")
-    _menu "1. RUN ONE  :  select type" "${items[@]}" || return 0
+    rows+=("B|B|Back|")
+    _menu "2. RUN ONE  :  select type" "KEY|TYPE|SCRIPT" "${rows[@]}" || return 0
     [[ "${MENU_KEY}" == "B" ]] && return 0
     idx=${MENU_IDX}
 
-    _select_owner "1. RUN ONE  ${STEP_LABELS[idx]}" || return 0
+    _select_owner "2. RUN ONE  ${STEP_LABELS[idx]}" || return 0
 
     _clear
     _header
-    _title "1. RUN ONE  :  ${STEP_LABELS[idx]}  x  ${#OWNER_LIST[@]} schema(s)"
+    _title "2. RUN ONE  :  ${STEP_LABELS[idx]}  x  ${#OWNER_LIST[@]} schema(s)"
     run_id="$(date '+%Y%m%d_%H%M%S')_$$"
     SUMMARY=()
     _log "START ${STEP_LABELS[idx]} : ${OWNER_LIST[*]} (run_id=${run_id})"
@@ -510,31 +701,32 @@ _menu_run_one() {
         no=$(( no + 1 ))
         _run_step "${run_id}" SINGLE "${owner}" ${idx} ${no} ${#OWNER_LIST[@]}
     done
-    _print_summary "1. RUN ONE"
+    _print_summary "2. RUN ONE"
     _pause
 }
 
-# [2] Run all : TABLE -> CONSTRAINT_C -> INDEX -> CONSTRAINT_P
+# [3] Run all : TABLE -> CONSTRAINT_C -> INDEX -> CONSTRAINT_P
 _menu_run_all() {
     local i owner run_id order no=0 total
-    _select_owner "2. RUN ALL" || return 0
+    _select_owner "3. RUN ALL" || return 0
 
     total=$(( ${#OWNER_LIST[@]} * ${#STEP_LABELS[@]} ))
     order=$(printf ' > %s' "${STEP_LABELS[@]}")
     _clear
     _header
-    _title "2. RUN ALL  :  plan"
-    _section "PLAN"
-    printf "    %-8s: %s  (%d)\n" "Schema" "$(_fit $(( W - 20 )) "${OWNER_LIST[*]}")" ${#OWNER_LIST[@]}
-    printf "    %-8s: %s\n" "Order" "${order# > }"
-    printf "    %-8s: %d\n" "Steps" ${total}
-    printf "    %-8s: %s\n" "Output" "$(_fit $(( W - 16 )) "${BASE_PATH}/ddl")"
+    _title "3. RUN ALL  :  plan"
+    _grid "PLAN|VALUE" \
+        "Schema|${OWNER_LIST[*]}" \
+        "Schemas|${#OWNER_LIST[@]}" \
+        "Order|${order# > }" \
+        "Steps|${total}" \
+        "Output|$(_fit 50 "${BASE_PATH}/ddl")"
     echo
     _confirm "  Run all GET_DDL" || return 0
 
     _clear
     _header
-    _title "2. RUN ALL  :  ${#OWNER_LIST[@]} schema(s) x ${#STEP_LABELS[@]} = ${total} step(s)"
+    _title "3. RUN ALL  :  ${#OWNER_LIST[@]} schema(s) x ${#STEP_LABELS[@]} = ${total} step(s)"
     run_id="$(date '+%Y%m%d_%H%M%S')_$$"
     SUMMARY=()
     _log "START ALL : ${OWNER_LIST[*]} (run_id=${run_id})"
@@ -544,170 +736,17 @@ _menu_run_all() {
             _run_step "${run_id}" ALL "${owner}" ${i} ${no} ${total}
         done
     done
-    _print_summary "2. RUN ALL"
+    _print_summary "3. RUN ALL"
     _pause
 }
 
 # ============================================================
 # View
 # ============================================================
-# [3] MIG_TAB_LIST : DBADM.MIG_TAB_LIST_{OWNER} as a grid
-#   - EXIST / NUM_ROWS from DBA_TABLES (EXIST N = table not in this DB)
-#   - USE_YN N = skipped by 02 / 03 scripts (dim row)
-#   - columns empty or the same in every row are hidden (shown in SUMMARY) ,
-#     wide columns are narrowed to the terminal width (TABLE_NAME last)
-#   - first screen fills the terminal , then Enter : next screen (a : all , q : stop)
-_screen_list() {
-    local owner tab tbs cols lines page cnt key i last total miss skip emp same stopped=0
-    local -a grid
-    _select_owner "3. MIG_TAB_LIST" NOALL || return 0
-    owner="${OWNER_LIST[0]}"
-    tab="DBADM.MIG_TAB_LIST_${owner}"
-
-    # old list tables have no TBS_TAB / TBS_IND
-    tbs=$(sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF | tr -d '[:space:]'
-set pagesize 0 feedback off heading off verify off
-SELECT COUNT(*) FROM DBA_TAB_COLUMNS
- WHERE OWNER = 'DBADM' AND TABLE_NAME = 'MIG_TAB_LIST_${owner}' AND COLUMN_NAME IN ('TBS_TAB', 'TBS_IND');
-exit
-_EOF
-)
-    if [[ "${tbs}" == "2" ]] ; then tbs="M.TBS_TAB || '|' || M.TBS_IND" ; else tbs="'|'" ; fi
-
-    sqlplus -s ${DB_USER}/${DB_PASS} > ${LIST_OUT} 2>&1 <<_EOF
-set pagesize 0
-set linesize 4000
-set trimout on
-set trimspool on
-set feedback off
-set heading off
-set echo off
-set verify off
-SELECT 'R|' || M.SEQ || '|' || M.TABLE_NAME || '|' || M.USE_YN || '|' || ${tbs}
-       || '|' || NVL2(T.TABLE_NAME, 'Y', 'N') || '|' || T.NUM_ROWS
-  FROM ${tab} M
-  LEFT JOIN DBA_TABLES T
-    ON T.OWNER = M.OWNER AND T.TABLE_NAME = M.TABLE_NAME
- ORDER BY M.SEQ;
-exit
-_EOF
-
-    # grid[0] = "#rows|missing|skipped|empty columns|same columns" , grid[1..3] = head , then rows , last = bottom line
-    cols=$(tput cols 2>/dev/null || echo 80)
-    mapfile -t grid < <(grep '^R|' ${LIST_OUT} | awk -F'|' -v maxw=$(( cols - 3 )) -v R="${C_RD}" -v D="${C_DIM}" -v Z="${C_0}" '
-        function cell(v, wd, right) {
-            if (length(v) > wd) v = substr(v, 1, wd - 2) ".."
-            return right ? sprintf("%" wd "s", v) : sprintf("%-" wd "s", v)
-        }
-        BEGIN {
-            nc = split("SEQ|TABLE_NAME|USE_YN|TBS_TAB|TBS_IND|EXIST|NUM_ROWS", h, "|")
-            split("1|0|0|0|0|0|1", rj, "|")       # right-justified
-            split("1|1|0|0|0|1|0", keep, "|")     # always shown
-            split("0|12|6|6|6|0|0", minw, "|")    # narrowed down to this when the terminal is too narrow (0 = never)
-        }
-        { n++ ; for (i = 1 ; i <= nc ; i++) d[n, i] = $(i + 1) }
-        END {
-            if (n == 0) { print "#0|0|0||" ; exit }
-            # hide a column that is empty / the same in every row (shown in SUMMARY instead)
-            for (i = 1 ; i <= nc ; i++) {
-                w[i] = length(h[i]) ; use[i] = keep[i]
-                for (r = 1 ; r <= n ; r++) {
-                    if (d[r, i] != d[1, i]) use[i] = 1
-                    if (length(d[r, i]) > w[i]) w[i] = length(d[r, i])
-                }
-                if (w[i] > 40) w[i] = 40
-            }
-            # too wide : narrow the widest column , TABLE_NAME last (its width counts 12 less)
-            total = 1
-            for (i = 1 ; i <= nc ; i++) if (use[i]) total += w[i] + 3
-            while (total > maxw) {
-                m = 0
-                for (i = 1 ; i <= nc ; i++) {
-                    if (!use[i] || minw[i] == 0 || w[i] <= minw[i]) continue
-                    e = w[i] - (i == 2 ? 12 : 0)
-                    if (m == 0 || e > em) { m = i ; em = e }
-                }
-                if (m == 0) break
-                w[m]-- ; total--
-            }
-
-            emp = "" ; same = "" ; miss = 0 ; skip = 0
-            for (i = 1 ; i <= nc ; i++) {
-                if (use[i]) continue
-                if (d[1, i] == "") emp  = emp  (emp  == "" ? "" : " ") h[i]
-                else               same = same (same == "" ? "" : "  ") h[i] "=" d[1, i]
-            }
-            for (r = 1 ; r <= n ; r++) { if (d[r, 6] == "N") miss++ ; if (d[r, 3] == "N") skip++ }
-            printf "#%d|%d|%d|%s|%s\n", n, miss, skip, emp, same
-
-            bar = "+"
-            for (i = 1 ; i <= nc ; i++) if (use[i]) bar = bar sprintf("%" (w[i] + 2) "s", "") "+"
-            gsub(/ /, "-", bar)
-            head = "|"
-            for (i = 1 ; i <= nc ; i++) if (use[i]) head = head " " cell(h[i], w[i], 0) " |"
-            bar2 = bar ; gsub(/-/, "=", bar2)
-            print bar ; print head ; print bar2
-            for (r = 1 ; r <= n ; r++) {
-                line = "|"
-                for (i = 1 ; i <= nc ; i++) {
-                    if (!use[i]) continue
-                    c = cell(d[r, i], w[i], rj[i])
-                    if (i == 6 && d[r, i] == "N") c = R c Z
-                    line = line " " c " |"
-                }
-                print (d[r, 3] == "N") ? D line Z : line
-            }
-            print bar
-        }')
-
-    _clear
-    _header
-    _title "3. MIG_TAB_LIST  :  ${tab}"
-    if (( ${#grid[@]} == 0 )) || [[ "${grid[0]}" == "#0|"* ]] ; then
-        _section "No row (or DB error)"
-        grep -v '^R|' ${LIST_OUT} | sed -e '/^[[:space:]]*$/d' -e 's/^/    /' | head -n 8
-        _pause
-        return 0
-    fi
-
-    IFS='|' read -r total miss skip emp same <<< "${grid[0]#\#}"
-    _section "SUMMARY"
-    printf "    %-10s: %s    USE_YN=N (skipped) : %s    not in DBA_TABLES : %s%s%s\n" \
-        "rows" "${total}" "${skip}" "$( (( miss > 0 )) && printf '%s' "${C_RD}")" "${miss}" "${C_0}"
-    printf "    %-10s: %s\n" "same" "$(_cut $(( W - 18 )) "${same:--}")"
-    printf "    %-10s: %s%s%s\n" "empty" "${C_DIM}" "$(_cut $(( W - 18 )) "${emp:--}")" "${C_0}"
-    printf "  %s\n" "${grid[1]}" "${grid[2]}" "${grid[3]}"
-
-    # first screen : what is left under header / title / summary / grid head ; then one full screen per Enter
-    lines=$(tput lines 2>/dev/null || echo 24)
-    page=$(( lines - HEADER_ROWS - 2 - 4 - 3 - 1 ))   # title 2 , summary 4 , grid head 3 , prompt 1
-    (( page < 3 )) && page=3
-    last=$(( ${#grid[@]} - 1 ))
-    cnt=0
-    for (( i = 4 ; i < last ; i++ )) ; do
-        if (( cnt >= page )) ; then
-            printf "  %s-- %d / %d rows   Enter : more   a : all   q : stop --%s" "${C_RV}" $(( i - 4 )) "${total}" "${C_0}"
-            IFS= read -rsn1 key
-            printf '\r\033[K'
-            case "${key}" in
-                q|Q) stopped=1 ; break ;;
-                a|A) page=999999999 ;;
-                *)   page=$(( lines - 1 )) ;;
-            esac
-            cnt=0
-        fi
-        printf "  %s\n" "${grid[i]}"
-        cnt=$(( cnt + 1 ))
-    done
-    printf "  %s\n" "${grid[last]}"
-    (( stopped )) && printf "  %s(stopped : %d / %d rows shown)%s\n" "${C_DIM}" $(( i - 4 )) "${total}" "${C_0}"
-    _pause
-}
-
 # _view_files <TITLE> <FILE>... : newest 30 files , pick one to view
 _view_files() {
     local title="$1" ; shift
-    local -a files items
+    local -a files rows
     local f sz st
     while true ; do
         _clear
@@ -722,18 +761,22 @@ _view_files() {
             _pause
             return 0
         fi
-        # FILE(40) MODIFIED(11) SIZE(7) STMT(6) = menu text width (W - 11) ; 7 spaces = item indent
-        items=("-$(printf "       %-40s %-11s %7s %6s" "FILE (newest ${#files[@]})" "MODIFIED" "SIZE" "STMT")")
+        # STMT (statements in the file) only for DDL output (*.sql)
+        rows=()
         for f in "${files[@]}" ; do
             sz=$(wc -c < "${f}" | tr -d ' ')
             (( sz > 99999 )) && sz="$(( sz / 1024 ))K"
             st=""
-            [[ "${f}" == *.sql ]] && st=$(grep -c ';$' "${f}")
-            items+=("|$(printf "%-40s %-11s %7s %6s" "$(_cut 40 "$(basename "${f}")")" \
-                "$(date -r "${f}" '+%m-%d %H:%M' 2>/dev/null)" "${sz}" "${st}")")
+            [[ "${f}" == *.sql ]] && st="|$(grep -c ';$' "${f}")"
+            rows+=("|$(basename "${f}")|$(date -r "${f}" '+%m-%d %H:%M' 2>/dev/null)|${sz}${st}")
         done
-        items+=("-" "B|Back")
-        _menu "${title}" "${items[@]}" || return 0
+        if [[ "${files[0]}" == *.sql ]] ; then
+            rows+=("B|Back|||")
+            _menu "${title}  (newest ${#files[@]})" "FILE*|MODIFIED|SIZE>|STMT>" "${rows[@]}" || return 0
+        else
+            rows+=("B|Back||")
+            _menu "${title}  (newest ${#files[@]})" "FILE*|MODIFIED|SIZE>" "${rows[@]}" || return 0
+        fi
         [[ "${MENU_KEY}" == "B" ]] && return 0
         _clear
         if command -v less > /dev/null 2>&1 ; then
@@ -745,7 +788,7 @@ _view_files() {
     done
 }
 
-# [5] Count by schema : latest result per OWNER / type + recent runs
+# [6] Count by schema : latest result per OWNER / type + recent runs
 _screen_count() {
     local bar
     _clear
@@ -762,7 +805,7 @@ _screen_count() {
     bar="  +$(_rep '-' 20)+$(_rep '-' 9)+$(_rep '-' 9)+$(_rep '-' 9)+$(_rep '-' 9)+$(_rep '-' 13)+"
     printf "%s\n" "${bar}"
     printf "  | %-18s | %7s | %7s | %7s | %7s | %-11s |\n" "OWNER" "TABLE" "CON_C" "INDEX" "CON_P" "LAST RUN"
-    printf "%s\n" "${bar}"
+    printf "%s\n" "${bar//-/=}"
     grep '^  {' "${HIST_FILE}" | awk -v R="${C_RD}" -v Y="${C_YL}" -v D="${C_DIM}" -v Z="${C_0}" "${AWK_V}"'
         {
             o = v("owner") ; t = v("type") ; s = v("status")
@@ -788,7 +831,7 @@ _screen_count() {
     bar="  +$(_rep '-' 13)+$(_rep '-' 8)+$(_rep '-' 14)+$(_rep '-' 14)+$(_rep '-' 6)+$(_rep '-' 7)+$(_rep '-' 6)+"
     printf "%s\n" "${bar}"
     printf "  | %-11s | %-6s | %-12s | %-12s | %-4s | %5s | %4s |\n" "TIME" "MODE" "OWNER" "TYPE" "STAT" "OBJ" "SEC"
-    printf "%s\n" "${bar}"
+    printf "%s\n" "${bar//-/=}"
     grep '^  {' "${HIST_FILE}" | tail -n 10 | awk -v R="${C_RD}" -v G="${C_GR}" -v D="${C_DIM}" -v Z="${C_0}" "${AWK_V}"'
         {
             s = v("status") ; c = (s == "OK") ? G : ((s == "NONE") ? D : R)
@@ -813,25 +856,21 @@ while true ; do
     _clear
     _header
     MAIN=(
-        "-SETUP"
-        "0|$(printf "%-20s %s" "Build MIG_TAB_LIST" "*.lst -> MIG_TAB_LIST_{OWNER} + tablespace")"
-        "-RUN"
-        "1|$(printf "%-20s %s" "Run one"         "TABLE | CON_C | INDEX | CON_P")"
-        "2|$(printf "%-20s %s" "Run all"         "TABLE > CON_C > INDEX > CON_P")"
-        "-VIEW"
-        "3|$(printf "%-20s %s" "MIG_TAB_LIST"    "grid of DBADM.MIG_TAB_LIST_{OWNER}")"
-        "4|$(printf "%-20s %s" "Logs"            "log/*.log")"
-        "5|$(printf "%-20s %s" "DDL output"      "ddl/*.sql")"
-        "6|$(printf "%-20s %s" "Count by schema" "latest count per schema (history)")"
-        "-EXIT"
-        "7|Quit"
+        "0|SETUP|0|Build MIG_TAB_LIST|*.lst + tablespace -> MIG_TAB_LIST"
+        "1||1|MIG_TAB_LIST|grid of built schemas (json)"
+        "2|RUN|2|Run one|TABLE / CON_C / INDEX / CON_P"
+        "3||3|Run all|TABLE > CON_C > INDEX > CON_P"
+        "4|VIEW|4|Logs|log/*.log"
+        "5||5|DDL output|ddl/*.sql"
+        "6||6|Count by schema|latest count per schema (history)"
+        "7|EXIT|7|Quit|"
     )
-    _menu "MAIN MENU" "${MAIN[@]}" || break
+    _menu "MAIN MENU" "GROUP|KEY|MENU|DESCRIPTION" "${MAIN[@]}" || break
     case "${MENU_KEY}" in
         0) _menu_build ;;
-        1) _menu_run_one ;;
-        2) _menu_run_all ;;
-        3) _screen_list ;;
+        1) _screen_list ;;
+        2) _menu_run_one ;;
+        3) _menu_run_all ;;
         4) _view_files "4. LOGS  (BASE_PATH/log)" "${BASE_PATH}"/log/*.log ;;
         5) _view_files "5. DDL OUTPUT  (BASE_PATH/ddl)" "${BASE_PATH}"/ddl/*.sql ;;
         6) _screen_count ;;
