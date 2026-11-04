@@ -56,6 +56,8 @@ cd TIBERO && docker network create dong-network && docker compose up -d --build
 MIGRATION/01.CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE>   # LIST_FILE = 줄마다 "OWNER TABLE_NAME"
 MIGRATION/02.EXPDP_META_PARFILE.sh <OWNER>                 # DB 디렉토리를 대화식으로 입력받음
 MIGRATION/03.EXTRACT_INDEX.sh <OWNER>
+MIGRATION/GET_DDL/GET_DDL.sh   # 대시보드 메뉴: 03.EXTRACT_* 개별/전체(TABLE→CON_C→INDEX→CON_P) 수행, 로그·DDL 조회,
+                               # 스키마별 건수 (수행이력 = ${BASE_PATH}/log/GET_DDL_HISTORY.json)
 
 # P2O_MIG : 인자 없음, 모두 대화식 (계정/비밀번호 → 방향키 메뉴 선택 → y/N)
 MIGRATION/P2O_MIG/P2O.sh                          # 메뉴 (설정 관리 + Unload / Load)
