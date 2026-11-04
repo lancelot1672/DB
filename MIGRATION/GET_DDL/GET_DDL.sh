@@ -553,11 +553,12 @@ _menu_run_all() {
 # ============================================================
 # [3] MIG_TAB_LIST : DBADM.MIG_TAB_LIST_{OWNER} as a grid
 #   - EXIST / NUM_ROWS from DBA_TABLES (EXIST N = table not in this DB)
+#   - USE_YN N = skipped by 02 / 03 scripts (dim row)
 #   - columns empty or the same in every row are hidden (shown in SUMMARY) ,
 #     wide columns are narrowed to the terminal width (TABLE_NAME last)
 #   - first screen fills the terminal , then Enter : next screen (a : all , q : stop)
 _screen_list() {
-    local owner tab tbs cols lines page cnt key i last total miss hid tt ti stopped=0
+    local owner tab tbs cols lines page cnt key i last total miss skip emp same stopped=0
     local -a grid
     _select_owner "3. MIG_TAB_LIST" NOALL || return 0
     owner="${OWNER_LIST[0]}"
@@ -582,8 +583,7 @@ set feedback off
 set heading off
 set echo off
 set verify off
-SELECT 'R|' || M.SEQ || '|' || M.TABLE_NAME || '|' || M.USE_YN || '|' || M.WHERE_COL
-       || '|' || M.PRE1 || '|' || M.PRE2 || '|' || ${tbs}
+SELECT 'R|' || M.SEQ || '|' || M.TABLE_NAME || '|' || M.USE_YN || '|' || ${tbs}
        || '|' || NVL2(T.TABLE_NAME, 'Y', 'N') || '|' || T.NUM_ROWS
   FROM ${tab} M
   LEFT JOIN DBA_TABLES T
@@ -592,22 +592,22 @@ SELECT 'R|' || M.SEQ || '|' || M.TABLE_NAME || '|' || M.USE_YN || '|' || M.WHERE
 exit
 _EOF
 
-    # grid[0] = "#rows|missing|hidden columns|TBS_TAB|TBS_IND" , grid[1..3] = head , then rows , last = bottom line
+    # grid[0] = "#rows|missing|skipped|empty columns|same columns" , grid[1..3] = head , then rows , last = bottom line
     cols=$(tput cols 2>/dev/null || echo 80)
-    mapfile -t grid < <(grep '^R|' ${LIST_OUT} | awk -F'|' -v maxw=$(( cols - 3 )) -v R="${C_RD}" -v Z="${C_0}" '
+    mapfile -t grid < <(grep '^R|' ${LIST_OUT} | awk -F'|' -v maxw=$(( cols - 3 )) -v R="${C_RD}" -v D="${C_DIM}" -v Z="${C_0}" '
         function cell(v, wd, right) {
             if (length(v) > wd) v = substr(v, 1, wd - 2) ".."
             return right ? sprintf("%" wd "s", v) : sprintf("%-" wd "s", v)
         }
         BEGIN {
-            nc = split("SEQ|TABLE_NAME|USE_YN|WHERE_COL|PRE1|PRE2|TBS_TAB|TBS_IND|EXIST|NUM_ROWS", h, "|")
-            split("1|0|0|0|0|0|0|0|0|1", rj, "|")       # right-justified
-            split("1|1|0|0|0|0|0|0|1|0", keep, "|")     # always shown
-            split("0|12|6|6|6|6|6|6|0|0", minw, "|")    # narrowed down to this when the terminal is too narrow (0 = never)
+            nc = split("SEQ|TABLE_NAME|USE_YN|TBS_TAB|TBS_IND|EXIST|NUM_ROWS", h, "|")
+            split("1|0|0|0|0|0|1", rj, "|")       # right-justified
+            split("1|1|0|0|0|1|0", keep, "|")     # always shown
+            split("0|12|6|6|6|0|0", minw, "|")    # narrowed down to this when the terminal is too narrow (0 = never)
         }
         { n++ ; for (i = 1 ; i <= nc ; i++) d[n, i] = $(i + 1) }
         END {
-            if (n == 0) { print "#0|0|||" ; exit }
+            if (n == 0) { print "#0|0|0||" ; exit }
             # hide a column that is empty / the same in every row (shown in SUMMARY instead)
             for (i = 1 ; i <= nc ; i++) {
                 w[i] = length(h[i]) ; use[i] = keep[i]
@@ -631,14 +631,14 @@ _EOF
                 w[m]-- ; total--
             }
 
-            emp = "" ; same = "" ; miss = 0
+            emp = "" ; same = "" ; miss = 0 ; skip = 0
             for (i = 1 ; i <= nc ; i++) {
                 if (use[i]) continue
                 if (d[1, i] == "") emp  = emp  (emp  == "" ? "" : " ") h[i]
                 else               same = same (same == "" ? "" : "  ") h[i] "=" d[1, i]
             }
-            for (r = 1 ; r <= n ; r++) if (d[r, 9] == "N") miss++
-            printf "#%d|%d|%s|%s\n", n, miss, emp, same
+            for (r = 1 ; r <= n ; r++) { if (d[r, 6] == "N") miss++ ; if (d[r, 3] == "N") skip++ }
+            printf "#%d|%d|%d|%s|%s\n", n, miss, skip, emp, same
 
             bar = "+"
             for (i = 1 ; i <= nc ; i++) if (use[i]) bar = bar sprintf("%" (w[i] + 2) "s", "") "+"
@@ -652,10 +652,10 @@ _EOF
                 for (i = 1 ; i <= nc ; i++) {
                     if (!use[i]) continue
                     c = cell(d[r, i], w[i], rj[i])
-                    if (i == 9 && d[r, i] == "N") c = R c Z
+                    if (i == 6 && d[r, i] == "N") c = R c Z
                     line = line " " c " |"
                 }
-                print line
+                print (d[r, 3] == "N") ? D line Z : line
             }
             print bar
         }')
@@ -670,10 +670,10 @@ _EOF
         return 0
     fi
 
-    IFS='|' read -r total miss emp same <<< "${grid[0]#\#}"
+    IFS='|' read -r total miss skip emp same <<< "${grid[0]#\#}"
     _section "SUMMARY"
-    printf "    %-10s: %s    not in DBA_TABLES : %s%s%s\n" \
-        "rows" "${total}" "$( (( miss > 0 )) && printf '%s' "${C_RD}")" "${miss}" "${C_0}"
+    printf "    %-10s: %s    USE_YN=N (skipped) : %s    not in DBA_TABLES : %s%s%s\n" \
+        "rows" "${total}" "${skip}" "$( (( miss > 0 )) && printf '%s' "${C_RD}")" "${miss}" "${C_0}"
     printf "    %-10s: %s\n" "same" "$(_cut $(( W - 18 )) "${same:--}")"
     printf "    %-10s: %s%s%s\n" "empty" "${C_DIM}" "$(_cut $(( W - 18 )) "${emp:--}")" "${C_0}"
     printf "  %s\n" "${grid[1]}" "${grid[2]}" "${grid[3]}"

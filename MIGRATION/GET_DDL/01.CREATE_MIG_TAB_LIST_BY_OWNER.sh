@@ -82,7 +82,9 @@ _cleanup() { rm -f ${TMP_CREATE_SQL} ${TMP_INSERT_SQL}; }
 # 1. Build CREATE / INSERT SQL from list file
 #    - one CREATE TABLE per distinct OWNER (PK added separately)
 #    - table name : DBADM.MIG_TAB_LIST_{OWNER}
-#    - SEQ resets per owner, NODE default 2
+#    - SEQ resets per owner
+#    - USE_YN 'N' = skipped by 02 / 03 scripts (NULL = used)
+#    - TBS_TAB / TBS_IND : target tablespace for 03.EXTRACT_TABLE / 03.EXTRACT_INDEX
 # ============================================================
 _out "%s\n" "$SEP"
 _log "Build SQL from list file : ${LIST_FILE}"
@@ -114,13 +116,9 @@ for OWNER in ${OWNERS} ; do
         echo "-- ---------- ${TAB} ----------"
         echo "CREATE TABLE ${TAB} ("
         echo "    SEQ         NUMBER,"
-        echo "    NODE        NUMBER        DEFAULT 2,"
         echo "    OWNER       VARCHAR2(10),"
         echo "    TABLE_NAME  VARCHAR2(50),"
         echo "    USE_YN      VARCHAR2(10),"
-        echo "    WHERE_COL   VARCHAR2(30),"
-        echo "    PRE1        VARCHAR2(100),"
-        echo "    PRE2        VARCHAR2(100),"
         echo "    TBS_TAB     VARCHAR2(128),"
         echo "    TBS_IND     VARCHAR2(128)"
         echo ");"

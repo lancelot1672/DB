@@ -98,8 +98,9 @@ MIGRATION/P2O_MIG/P2O.sh load                     # 메뉴 없이 Load 모듈만
 (`WHERE {col} >= '{pre1}' AND {col} < '{pre2}'`)이 된다. `MIG_LIST` 앱이 이 테이블의 INSERT 문을
 생성하고, `01.` 스크립트가 소유자별 복제본을 만들며, `02.`/`03.` 스크립트가 이를 읽어 Data Pump
 parfile 을 만들고 DDL 을 추출한다. Streamlit 생성기와 shell 스크립트는 컬럼 구성이 약간 다르므로
-(`MIG_LIST`: `WHERE_COL1/PRE1/WHERE_COL2/PRE2`; `01.` 소유자별 테이블: `WHERE_COL/PRE1/PRE2/TBS_TAB/TBS_IND`)
-양쪽을 수정할 때 일관성을 유지할 것.
+(`MIG_LIST`: `WHERE_COL1/PRE1/WHERE_COL2/PRE2`; `MIGRATION/GET_DDL/01.` 소유자별 테이블:
+`SEQ/OWNER/TABLE_NAME/USE_YN/TBS_TAB/TBS_IND` — DDL 추출 전용이라 행 필터 컬럼이 없다)
+양쪽을 수정할 때 일관성을 유지할 것. `USE_YN='N'` 행은 `02.`·`03.EXTRACT_*` 모두 건너뛴다(NULL = 대상).
 `TBS_TAB`/`TBS_IND` 는 대상 테이블스페이스(소유자 단위로 같은 값)이며, `03.EXTRACT_TABLE` 은 값이 있으면
 `SEGMENT_ATTRIBUTES` 를 켜고 모든 `TABLESPACE "x"` 를 치환, `03.EXTRACT_INDEX` 는 `TABLESPACE` 절을 덧붙인다
 (LOCAL 인덱스는 `TABLESPACE "x" LOCAL`). 값이 없거나 컬럼이 없는 옛 테이블이면 테이블스페이스 절 없이 추출한다.
