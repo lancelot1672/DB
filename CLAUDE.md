@@ -56,7 +56,9 @@ cd TIBERO && docker network create dong-network && docker compose up -d --build
 MIGRATION/01.CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE>   # LIST_FILE = 줄마다 "OWNER TABLE_NAME"
 MIGRATION/02.EXPDP_META_PARFILE.sh <OWNER>                 # DB 디렉토리를 대화식으로 입력받음
 MIGRATION/03.EXTRACT_INDEX.sh <OWNER>
-MIGRATION/GET_DDL/GET_DDL.sh   # 대시보드 메뉴: 03.EXTRACT_* 개별/전체(TABLE→CON_C→INDEX→CON_P) 수행, 로그·DDL 조회,
+MIGRATION/GET_DDL/GET_DDL.sh   # 대시보드 메뉴: 현재 디렉토리 *.lst 선택 + TABLE/INDEX 테이블스페이스 입력 → 01. 실행,
+                               # MIG_TAB_LIST_{OWNER} 그리드 조회(Enter = 다음 화면),
+                               # 03.EXTRACT_* 개별/전체(TABLE→CON_C→INDEX→CON_P) 수행, 로그·DDL 조회,
                                # 스키마별 건수 (수행이력 = ${BASE_PATH}/log/GET_DDL_HISTORY.json)
 
 # P2O_MIG : 인자 없음, 모두 대화식 (계정/비밀번호 → 방향키 메뉴 선택 → y/N)
@@ -96,8 +98,11 @@ MIGRATION/P2O_MIG/P2O.sh load                     # 메뉴 없이 Load 모듈만
 (`WHERE {col} >= '{pre1}' AND {col} < '{pre2}'`)이 된다. `MIG_LIST` 앱이 이 테이블의 INSERT 문을
 생성하고, `01.` 스크립트가 소유자별 복제본을 만들며, `02.`/`03.` 스크립트가 이를 읽어 Data Pump
 parfile 을 만들고 DDL 을 추출한다. Streamlit 생성기와 shell 스크립트는 컬럼 구성이 약간 다르므로
-(`MIG_LIST`: `WHERE_COL1/PRE1/WHERE_COL2/PRE2`; `01.` 소유자별 테이블: `WHERE_COL/PRE1/PRE2`)
+(`MIG_LIST`: `WHERE_COL1/PRE1/WHERE_COL2/PRE2`; `01.` 소유자별 테이블: `WHERE_COL/PRE1/PRE2/TBS_TAB/TBS_IND`)
 양쪽을 수정할 때 일관성을 유지할 것.
+`TBS_TAB`/`TBS_IND` 는 대상 테이블스페이스(소유자 단위로 같은 값)이며, `03.EXTRACT_TABLE` 은 값이 있으면
+`SEGMENT_ATTRIBUTES` 를 켜고 모든 `TABLESPACE "x"` 를 치환, `03.EXTRACT_INDEX` 는 `TABLESPACE` 절을 덧붙인다
+(LOCAL 인덱스는 `TABLESPACE "x" LOCAL`). 값이 없거나 컬럼이 없는 옛 테이블이면 테이블스페이스 절 없이 추출한다.
 
 ## TIBERO SQL 그리드 — 반드시 지켜야 할 사항
 

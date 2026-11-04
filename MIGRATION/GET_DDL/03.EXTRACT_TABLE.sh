@@ -4,7 +4,10 @@
 # Extract TABLE DDL for the tables in DBADM.MIG_TAB_LIST_{OWNER}.
 #   Pass 1 : generate GET_DDL SELECT statements (get_ddl file)
 #   Pass 2 : run them and spool the actual DDL
-#   - partition definition is kept (STORAGE / SEGMENT_ATTRIBUTES removed)
+#   - partition definition is kept (STORAGE removed)
+#   - TBS_TAB of ${MIG_TAB} set   : every TABLESPACE clause (table / partition / LOB)
+#                                   -> TABLESPACE "TBS_TAB" (SEGMENT_ATTRIBUTES kept)
+#     TBS_TAB empty / no column   : SEGMENT_ATTRIBUTES removed (no tablespace clause)
 #   - PK / CHECK / FK constraints are excluded
 #     (03.EXTRACT_INDEX.sh -> 03.EXTRACT_CONSTRAINT_P/C.sh)
 # Usage: 03.EXTRACT_TABLE.sh <OWNER>
@@ -51,11 +54,32 @@ _ok()   { _out "[OK]   %s\n" "$*"; }
 _fail() { _out "[FAIL] %s\n" "$*"; }
 
 # ============================================================
+# Target tablespace : MAX(TBS_TAB) of ${MIG_TAB}
+#   (empty, or column missing in an old list table -> not set)
+# ============================================================
+TBS_TAB=$(sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF | tr -d '[:space:]'
+set pagesize 0 feedback off heading off verify off
+SELECT MAX(TBS_TAB) FROM ${MIG_TAB};
+exit
+_EOF
+)
+[[ "${TBS_TAB}" =~ ^[A-Z][A-Z0-9_\$#]*$ ]] || TBS_TAB=""
+
+if [[ -n "${TBS_TAB}" ]] ; then
+    SEG_ATTR=true
+    GEN_SELECT="'SELECT REGEXP_REPLACE(DBMS_METADATA.GET_DDL(''TABLE'',''' || TABLE_NAME || ''',''' || OWNER || '''),''TABLESPACE \"[^\"]*\"'',''TABLESPACE \"${TBS_TAB}\"'') AS DDL FROM DUAL;'"
+else
+    SEG_ATTR=false
+    GEN_SELECT="'SELECT DBMS_METADATA.GET_DDL(''TABLE'',''' || TABLE_NAME || ''',''' || OWNER || ''') AS DDL FROM DUAL;'"
+fi
+
+# ============================================================
 # Pass 1. Generate GET_DDL SELECT statements -> ${GEN_SQL}
 #   - only tables that exist in DBA_TABLES
 # ============================================================
 _out "%s\n" "$SEP"
 _log "Pass 1: generate GET_DDL statements (${LABEL}) from ${MIG_TAB}"
+_log "Target TABLE TABLESPACE : ${TBS_TAB:-(not set : tablespace clause removed)}"
 _out "%s\n" "$SEP"
 
 sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF
@@ -69,7 +93,7 @@ set verify off
 set trimspool on
 
 spool ${GEN_SQL}
-SELECT DISTINCT 'SELECT DBMS_METADATA.GET_DDL(''TABLE'',''' || TABLE_NAME || ''',''' || OWNER || ''') AS DDL FROM DUAL;'
+SELECT DISTINCT ${GEN_SELECT}
   FROM DBA_TABLES
  WHERE (OWNER, TABLE_NAME) IN (SELECT OWNER, TABLE_NAME FROM ${MIG_TAB})
  ORDER BY 1;
@@ -111,7 +135,7 @@ col ddl format a32767
 execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'SQLTERMINATOR',true);
 execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'PRETTY',true);
 execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'STORAGE',false);
-execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'SEGMENT_ATTRIBUTES',false);
+execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'SEGMENT_ATTRIBUTES',${SEG_ATTR});
 execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'CONSTRAINTS',false);
 execute dbms_metadata.set_transform_param (dbms_metadata.session_transform,'REF_CONSTRAINTS',false);
 

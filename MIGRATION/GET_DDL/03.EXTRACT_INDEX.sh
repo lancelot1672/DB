@@ -5,6 +5,9 @@
 #   Pass 1 : generate GET_DDL SELECT statements (get_ddl file)
 #   Pass 2 : run them and spool the actual DDL
 #   LOCAL partitioned index : partition list is removed, only LOCAL kept.
+#   TBS_IND of ${MIG_TAB} set : LOCAL index -> ... TABLESPACE "TBS_IND" LOCAL
+#                               other index -> ... TABLESPACE "TBS_IND";
+#   (SEGMENT_ATTRIBUTES is removed, so the source tablespace never appears)
 # Usage: 03.EXTRACT_INDEX.sh <OWNER>
 # ============================================================
 
@@ -49,12 +52,33 @@ _ok()   { _out "[OK]   %s\n" "$*"; }
 _fail() { _out "[FAIL] %s\n" "$*"; }
 
 # ============================================================
+# Target tablespace : MAX(TBS_IND) of ${MIG_TAB}
+#   (empty, or column missing in an old list table -> not set)
+# ============================================================
+TBS_IND=$(sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF | tr -d '[:space:]'
+set pagesize 0 feedback off heading off verify off
+SELECT MAX(TBS_IND) FROM ${MIG_TAB};
+exit
+_EOF
+)
+[[ "${TBS_IND}" =~ ^[A-Z][A-Z0-9_\$#]*$ ]] || TBS_IND=""
+
+if [[ -n "${TBS_IND}" ]] ; then
+    LOCAL_REPL=" TABLESPACE \"${TBS_IND}\" LOCAL"
+    ELSE_SELECT="'SELECT REGEXP_REPLACE(DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || '''),''\s*;\s*$'','' TABLESPACE \"${TBS_IND}\";'') AS DDL FROM DUAL;'"
+else
+    LOCAL_REPL=" LOCAL"
+    ELSE_SELECT="'SELECT DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || ''') AS DDL FROM DUAL;'"
+fi
+
+# ============================================================
 # Pass 1. Generate GET_DDL SELECT statements -> ${GEN_SQL}
 #   - DBA_INDEXES is joined on (TABLE_OWNER, TABLE_NAME)
 #   - GET_DDL uses the index OWNER
 # ============================================================
 _out "%s\n" "$SEP"
 _log "Pass 1: generate GET_DDL statements (${LABEL}) from ${MIG_TAB}"
+_log "Target INDEX TABLESPACE : ${TBS_IND:-(not set : tablespace clause removed)}"
 _out "%s\n" "$SEP"
 
 sqlplus -s ${DB_USER}/${DB_PASS} <<_EOF
@@ -68,13 +92,13 @@ set verify off
 set trimspool on
 
 spool ${GEN_SQL}
--- LOCAL index : LOCAL (PARTITION ...) -> LOCAL (partitions follow the table)
+-- LOCAL index : LOCAL (PARTITION ...) -> [TABLESPACE "TBS_IND"] LOCAL (partitions follow the table)
 SELECT DISTINCT
        CASE WHEN P.LOCALITY = 'LOCAL' THEN
             'SELECT REGEXP_REPLACE(DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || '''),'
-            || '''\s+LOCAL\s*\(.*\)'','' LOCAL'',1,1,''n'') AS DDL FROM DUAL;'
+            || '''\s+LOCAL\s*\(.*\)'',''${LOCAL_REPL}'',1,1,''n'') AS DDL FROM DUAL;'
        ELSE
-            'SELECT DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || ''') AS DDL FROM DUAL;'
+            ${ELSE_SELECT}
        END
   FROM DBA_INDEXES I
   LEFT JOIN DBA_PART_INDEXES P

@@ -4,12 +4,18 @@
 # Read a file of "OWNER TABLE_NAME" (space separated) lines and
 # create per-owner table DBADM.MIG_TAB_LIST_{OWNER},
 # then insert the table list for each owner.
-# Usage: CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE>
+#   TBS_TAB / TBS_IND : target TABLE / INDEX tablespace stored in every row
+#                       (03.EXTRACT_TABLE / 03.EXTRACT_INDEX put it in the DDL ;
+#                        empty = no tablespace clause)
+# Usage: CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE> [TBS_TAB] [TBS_IND]
+#        (TBS not given -> asked interactively)
 # ============================================================
 
 if [[ -z "$1" ]] ; then
-  echo "Usage: CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE>"
+  echo "Usage: CREATE_MIG_TAB_LIST_BY_OWNER.sh <LIST_FILE> [TBS_TAB] [TBS_IND]"
   echo "  LIST_FILE : text file, each line = OWNER TABLE_NAME (space separated)"
+  echo "  TBS_TAB   : target TABLE tablespace (\"\" = none)"
+  echo "  TBS_IND   : target INDEX tablespace (\"\" = none)"
   exit 1
 fi
 
@@ -18,6 +24,30 @@ if [[ ! -f "${LIST_FILE}" ]] ; then
   echo "[FAIL] List file not found: ${LIST_FILE}"
   exit 1
 fi
+
+# _ask_tbs <PROMPT> : tablespace name (upper-cased) or empty -> ASK_VAL
+_ask_tbs() {
+    while true ; do
+        read -r -p "$1" ASK_VAL || return 1
+        ASK_VAL=$(echo "${ASK_VAL}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        [[ -z "${ASK_VAL}" || "${ASK_VAL}" =~ ^[A-Z][A-Z0-9_\$#]*$ ]] && return 0
+        echo "  -> letters, digits, _ \$ # only, starting with a letter (Enter = none). Try again."
+    done
+}
+
+if (( $# >= 3 )) ; then
+    TBS_TAB=$(echo "$2" | tr '[:lower:]' '[:upper:]')
+    TBS_IND=$(echo "$3" | tr '[:lower:]' '[:upper:]')
+else
+    _ask_tbs "TABLE TABLESPACE (Enter = none) : " || exit 1 ; TBS_TAB="${ASK_VAL}"
+    _ask_tbs "INDEX TABLESPACE (Enter = none) : " || exit 1 ; TBS_IND="${ASK_VAL}"
+fi
+for _t in "${TBS_TAB}" "${TBS_IND}" ; do
+    if [[ -n "${_t}" && ! "${_t}" =~ ^[A-Z][A-Z0-9_\$#]*$ ]] ; then
+        echo "[FAIL] Invalid tablespace name: ${_t}"
+        exit 1
+    fi
+done
 
 # --- Load environment variables ---
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -56,6 +86,7 @@ _cleanup() { rm -f ${TMP_CREATE_SQL} ${TMP_INSERT_SQL}; }
 # ============================================================
 _out "%s\n" "$SEP"
 _log "Build SQL from list file : ${LIST_FILE}"
+_log "TABLE TABLESPACE : ${TBS_TAB:-(none)} , INDEX TABLESPACE : ${TBS_IND:-(none)}"
 _out "%s\n" "$SEP"
 
 # Distinct owners (1st column), keep file order
@@ -89,17 +120,24 @@ for OWNER in ${OWNERS} ; do
         echo "    USE_YN      VARCHAR2(10),"
         echo "    WHERE_COL   VARCHAR2(30),"
         echo "    PRE1        VARCHAR2(100),"
-        echo "    PRE2        VARCHAR2(100)"
+        echo "    PRE2        VARCHAR2(100),"
+        echo "    TBS_TAB     VARCHAR2(128),"
+        echo "    TBS_IND     VARCHAR2(128)"
         echo ");"
         echo "ALTER TABLE ${TAB} ADD CONSTRAINT PK_MIG_TAB_LIST_${OWNER} PRIMARY KEY (SEQ);"
         echo ""
     } >> ${TMP_CREATE_SQL}
 
     # --- INSERT rows for this owner (SEQ resets per owner) ---
-    awk -v owner="${OWNER}" -v tab="${TAB}" '
+    awk -v owner="${OWNER}" -v tab="${TAB}" -v tt="${TBS_TAB}" -v ti="${TBS_IND}" '
+        BEGIN {
+            q = sprintf("%c", 39)
+            tt = (tt == "") ? "NULL" : q tt q
+            ti = (ti == "") ? "NULL" : q ti q
+        }
         NF>=2 && $1==owner {
             seq++
-            printf "INSERT INTO %s (SEQ, OWNER, TABLE_NAME) VALUES (%d, '\''%s'\'', '\''%s'\'');\n", tab, seq, $1, $2
+            printf "INSERT INTO %s (SEQ, OWNER, TABLE_NAME, TBS_TAB, TBS_IND) VALUES (%d, %s%s%s, %s%s%s, %s, %s);\n", tab, seq, q, $1, q, q, $2, q, tt, ti
         }
     ' "${LIST_FILE}" >> ${TMP_INSERT_SQL}
 done
