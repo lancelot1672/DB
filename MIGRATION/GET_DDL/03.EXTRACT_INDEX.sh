@@ -4,6 +4,7 @@
 # Extract INDEX DDL for the tables in DBADM.MIG_TAB_LIST_{OWNER}.
 #   Pass 1 : generate GET_DDL SELECT statements (get_ddl file)
 #   Pass 2 : run them and spool the actual DDL
+#   LOCAL partitioned index : partition list is removed, only LOCAL kept.
 # Usage: 03.EXTRACT_INDEX.sh <OWNER>
 # ============================================================
 
@@ -67,10 +68,19 @@ set verify off
 set trimspool on
 
 spool ${GEN_SQL}
-SELECT DISTINCT 'SELECT DBMS_METADATA.GET_DDL(''INDEX'',''' || INDEX_NAME || ''',''' || OWNER || ''') AS DDL FROM DUAL;'
-  FROM DBA_INDEXES
- WHERE (TABLE_OWNER, TABLE_NAME) IN (SELECT OWNER, TABLE_NAME FROM ${MIG_TAB})
- AND INDEX_NAME NOT LIKE 'SYS%'
+-- LOCAL index : LOCAL (PARTITION ...) -> LOCAL (partitions follow the table)
+SELECT DISTINCT
+       CASE WHEN P.LOCALITY = 'LOCAL' THEN
+            'SELECT REGEXP_REPLACE(DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || '''),'
+            || '''\s+LOCAL\s*\(.*\)'','' LOCAL'',1,1,''n'') AS DDL FROM DUAL;'
+       ELSE
+            'SELECT DBMS_METADATA.GET_DDL(''INDEX'',''' || I.INDEX_NAME || ''',''' || I.OWNER || ''') AS DDL FROM DUAL;'
+       END
+  FROM DBA_INDEXES I
+  LEFT JOIN DBA_PART_INDEXES P
+    ON P.OWNER = I.OWNER AND P.INDEX_NAME = I.INDEX_NAME
+ WHERE (I.TABLE_OWNER, I.TABLE_NAME) IN (SELECT OWNER, TABLE_NAME FROM ${MIG_TAB})
+ AND I.INDEX_NAME NOT LIKE 'SYS%'
  ORDER BY 1;
 spool off
 exit

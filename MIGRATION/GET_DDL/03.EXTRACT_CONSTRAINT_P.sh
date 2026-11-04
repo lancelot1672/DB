@@ -5,6 +5,8 @@
 # DBADM.MIG_TAB_LIST_{OWNER}.
 #   Pass 1 : generate GET_DDL SELECT statements (get_ddl file)
 #   Pass 2 : run them and spool the actual DDL
+#   USING INDEX clause is rewritten to reference the existing PK index
+#   (no partition clause) -> run 03.EXTRACT_INDEX.sh DDL first.
 # Usage: 03.EXTRACT_CONSTRAINT_P.sh <OWNER>
 # ============================================================
 
@@ -66,7 +68,15 @@ set verify off
 set trimspool on
 
 spool ${GEN_SQL}
-SELECT DISTINCT 'SELECT DBMS_METADATA.GET_DDL(''CONSTRAINT'',''' || CONSTRAINT_NAME || ''',''' || OWNER || ''') AS DDL FROM DUAL;'
+-- USING INDEX clause -> USING INDEX "IDX_OWNER"."IDX_NAME"
+--   (drops LOCAL/GLOBAL partition clause; index is created first by 03.EXTRACT_INDEX.sh)
+SELECT DISTINCT
+       CASE WHEN INDEX_NAME IS NULL THEN
+            'SELECT DBMS_METADATA.GET_DDL(''CONSTRAINT'',''' || CONSTRAINT_NAME || ''',''' || OWNER || ''') AS DDL FROM DUAL;'
+       ELSE
+            'SELECT REGEXP_REPLACE(DBMS_METADATA.GET_DDL(''CONSTRAINT'',''' || CONSTRAINT_NAME || ''',''' || OWNER || '''),'
+            || '''USING INDEX.*(ENABLE|DISABLE)'',''USING INDEX "' || NVL(INDEX_OWNER, OWNER) || '"."' || INDEX_NAME || '" \1'',1,1,''n'') AS DDL FROM DUAL;'
+       END
   FROM DBA_CONSTRAINTS
  WHERE CONSTRAINT_TYPE = 'P'
    AND (OWNER, TABLE_NAME) IN (SELECT OWNER, TABLE_NAME FROM ${MIG_TAB})
